@@ -9,6 +9,12 @@ const log = require('../utils/logger');
 
 const COMPLETED_STATUSES = new Set(['liked', 'already_liked', 'not_found', 'ambiguous']);
 
+function isRetryableError(error) {
+  const message = String(error?.message || '');
+  if (message.includes('HTTP 400') || message.includes('Bad Request')) return false;
+  return true;
+}
+
 async function loadSpotifyLibrary({ refresh = false } = {}) {
   if (!refresh) {
     const cached = await readJson(config.spotify.libraryPath, null);
@@ -49,6 +55,7 @@ async function saveReview(review) {
 
 function summarize(results) {
   const counts = {
+    matched: 0,
     liked: 0,
     already_liked: 0,
     ambiguous: 0,
@@ -76,17 +83,24 @@ function recordFor(track, status, extra = {}) {
 
 function shouldProcess(existing, options) {
   if (options.force) return true;
-  if (options.retryFailed && existing?.status === 'failed') return true;
+  if (options.retryFailed) return existing?.status === 'failed';
   if (!existing) return true;
-  return !COMPLETED_STATUSES.has(existing.status) && existing.status !== 'failed';
+  if (existing.status === 'failed') return true;
+  return !COMPLETED_STATUSES.has(existing.status);
 }
 
 async function processTrack(track, options, likedVideoIds) {
-  const candidates = await withRetries(() => ytmusic.searchTrack(track), {
-    retries: config.sync.maxRetries,
-    baseDelayMs: 700,
-    onRetry: (error, attempt) => log.debug(`Retrying YouTube Music search for ${track.title}, attempt ${attempt}`, error.message),
-  });
+  let candidates;
+  try {
+    candidates = await withRetries(() => ytmusic.searchTrack(track), {
+      retries: config.sync.maxRetries,
+      baseDelayMs: 700,
+      shouldRetry: isRetryableError,
+      onRetry: (error, attempt) => log.debug(`Retrying YouTube Music search for ${track.title}, attempt ${attempt}`, error.message),
+    });
+  } catch (error) {
+    throw new Error(`YouTube Music search failed: ${error.message}`);
+  }
 
   if (!candidates.length) {
     return recordFor(track, 'not_found', { match: null, candidates: [] });
@@ -105,11 +119,16 @@ async function processTrack(track, options, likedVideoIds) {
     return recordFor(track, 'matched', { match });
   }
 
-  await withRetries(() => ytmusic.likeTrack(match.videoId), {
-    retries: config.sync.maxRetries,
-    baseDelayMs: 900,
-    onRetry: (error, attempt) => log.debug(`Retrying YouTube Music like for ${match.videoId}, attempt ${attempt}`, error.message),
-  });
+  try {
+    await withRetries(() => ytmusic.likeTrack(match.videoId), {
+      retries: config.sync.maxRetries,
+      baseDelayMs: 900,
+      shouldRetry: isRetryableError,
+      onRetry: (error, attempt) => log.debug(`Retrying YouTube Music like for ${match.videoId}, attempt ${attempt}`, error.message),
+    });
+  } catch (error) {
+    throw new Error(`YouTube Music like failed for videoId ${match.videoId}: ${error.message}`);
+  }
   likedVideoIds?.add(match.videoId);
   return recordFor(track, 'liked', { match });
 }
@@ -120,6 +139,8 @@ async function syncLibrary(options = {}) {
     dryRun: false,
     retryFailed: false,
     force: false,
+    limit: null,
+    fromIndex: null,
     ...options,
   };
 
@@ -140,13 +161,19 @@ async function syncLibrary(options = {}) {
       likedVideoIds = await ytmusic.getLikedVideoIds();
       log.line(`Loaded ${likedVideoIds.size} existing YouTube Music liked IDs.`);
     } catch (error) {
-      log.debug('Could not preload YouTube Music liked IDs; continuing without already-liked detection.', error.message);
+      log.failed(`Could not preload YouTube Music liked IDs; continuing without already-liked detection. ${error.message}`);
     }
   }
 
-  let processed = 0;
-  for (const track of tracks) {
-    processed += 1;
+  const startIndex = normalizedOptions.fromIndex ? normalizedOptions.fromIndex - 1 : 0;
+  const selectedTracks = tracks
+    .map((track, index) => ({ track, index }))
+    .filter((entry) => entry.index >= startIndex)
+    .slice(0, normalizedOptions.limit || undefined);
+
+  for (const entry of selectedTracks) {
+    const { track } = entry;
+    const processed = entry.index + 1;
     const existing = results.tracks[track.spotifyTrackId];
     if (!shouldProcess(existing, normalizedOptions)) {
       log.skipped(`${renderProgress(processed, tracks.length)} ${track.title} - ${track.artists.join(', ')}`);
@@ -194,6 +221,7 @@ async function syncLibrary(options = {}) {
   log.line('');
   log.line('Synchronization complete.');
   log.line(`Total Spotify liked songs: ${tracks.length}`);
+  if (normalizedOptions.dryRun) log.line(`Matched:        ${counts.matched}`);
   log.line(`Liked:          ${counts.liked}`);
   log.line(`Already liked:  ${counts.already_liked}`);
   log.line(`Review needed:  ${counts.ambiguous}`);

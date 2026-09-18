@@ -17,7 +17,7 @@ async function ensurePythonReady() {
   return python;
 }
 
-function runPython(args) {
+function runPython(args, options = {}) {
   return new Promise(async (resolve, reject) => {
     let python;
     try {
@@ -31,10 +31,13 @@ function runPython(args) {
       path.join(config.rootDir, 'src', 'ytmusic', 'like_song.py'),
       '--auth',
       config.ytmusic.authPath,
+      '--browser-auth',
+      config.ytmusic.browserAuthPath,
       '--client-id',
       config.ytmusic.clientId,
       '--client-secret',
       config.ytmusic.clientSecret,
+      ...(options.trace ? ['--trace'] : []),
       ...args,
     ];
 
@@ -47,7 +50,10 @@ function runPython(args) {
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      if (options.forwardStderr) process.stderr.write(chunk);
+    });
     child.on('error', reject);
     child.on('close', (code) => {
       const text = stdout.trim();
@@ -78,14 +84,58 @@ function likeTrack(videoId) {
   return runPython(['like', '--video-id', videoId]);
 }
 
+function likeAndVerifyTrack(videoId, verifyLimit = 10000) {
+  return runPython(['like-verify', '--video-id', videoId, '--verify-limit', String(verifyLimit)], {
+    trace: true,
+    forwardStderr: true,
+  });
+}
+
 function getLikedVideoIds() {
   return runPython(['liked-ids', '--limit', String(config.ytmusic.likedSongsLimit)])
     .then((payload) => new Set(payload.videoIds || []));
 }
 
+function authInitDiagnostic() {
+  return runPython(['auth-init'], {
+    trace: true,
+    forwardStderr: true,
+  });
+}
+
+function accountInfoDiagnostic() {
+  return runPython(['account-info'], {
+    trace: true,
+    forwardStderr: true,
+  });
+}
+
+function likedSongsDiagnostic(limit = 25) {
+  return runPython(['liked-ids', '--limit', String(limit)], {
+    trace: true,
+    forwardStderr: true,
+  });
+}
+
+function traceSearchTrack(track, options = {}) {
+  const query = `${track.title} ${track.artists.join(' ')}`.trim();
+  const args = ['search', '--query', query, '--limit', String(config.ytmusic.searchLimit)];
+  if (options.filters) args.push('--filters', options.filters);
+  return runPython(args, {
+    trace: true,
+    forwardStderr: true,
+  });
+}
+
 module.exports = {
   pythonExecutable,
+  runPython,
   searchTrack,
   likeTrack,
+  likeAndVerifyTrack,
   getLikedVideoIds,
+  authInitDiagnostic,
+  accountInfoDiagnostic,
+  likedSongsDiagnostic,
+  traceSearchTrack,
 };

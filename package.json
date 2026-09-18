@@ -7,6 +7,7 @@
     "start": "node src/index.js",
     "auth:spotify": "node src/index.js auth:spotify",
     "auth:ytmusic": "node src/index.js auth:ytmusic",
+    "auth:ytmusic:browser": "node src/index.js auth:ytmusic:browser",
     "fetch": "node src/index.js fetch",
     "match": "node src/index.js match",
     "sync": "node src/index.js sync",

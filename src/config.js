@@ -30,6 +30,7 @@ module.exports = {
   },
   ytmusic: {
     authPath: process.env.YTMUSIC_AUTH_PATH || path.join(dataDir, 'ytmusic-oauth.json'),
+    browserAuthPath: process.env.YTMUSIC_BROWSER_AUTH_PATH || path.join(dataDir, 'ytmusic-browser.json'),
     clientId: process.env.YTMUSIC_CLIENT_ID || '',
     clientSecret: process.env.YTMUSIC_CLIENT_SECRET || '',
     searchLimit: numberFromEnv('YTMUSIC_SEARCH_LIMIT', 10),

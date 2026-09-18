@@ -106,6 +106,27 @@ npm run auth:ytmusic
 
 Follow the prompts. The generated auth file is stored under `data/` and ignored by Git.
 
+If OAuth initializes but authenticated YouTube Music account operations return HTTP 400, use browser authentication instead:
+
+```bash
+npm run auth:ytmusic:browser
+```
+
+This creates `data/ytmusic-browser.json` from request headers copied from an active YouTube Music browser session. OAuth remains in `data/ytmusic-oauth.json`, but account operations prefer browser auth when the browser file exists.
+
+The helper asks for these values one at a time:
+
+```text
+Accept
+Authorization
+Content-Type
+X-Goog-AuthUser
+x-origin
+Cookie
+```
+
+You can also paste a JSON or `Header: value` block at the first prompt. The setup helper validates those fields, writes the browser auth file, initializes `YTMusic` with it, and performs a read-only account diagnostic.
+
 ## Commands
 
 ```bash
