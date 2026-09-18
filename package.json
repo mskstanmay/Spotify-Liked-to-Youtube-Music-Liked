@@ -2,8 +2,9 @@
   "name": "spotify-liked-to-youtube-music-liked",
   "version": "1.0.0",
   "description": "As it says the repo name.",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
+    "start": "node src/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -17,5 +18,8 @@
   "bugs": {
     "url": "https://github.com/mskstanmay/Spotify-Liked-to-Youtube-Music-Liked/issues"
   },
-  "homepage": "https://github.com/mskstanmay/Spotify-Liked-to-Youtube-Music-Liked#readme"
+  "homepage": "https://github.com/mskstanmay/Spotify-Liked-to-Youtube-Music-Liked#readme",
+  "dependencies": {
+    "dotenv": "^18.0.0"
+  }
 }
