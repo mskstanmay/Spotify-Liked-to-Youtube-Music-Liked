@@ -9,8 +9,33 @@ const log = require('../utils/logger');
 
 const COMPLETED_STATUSES = new Set(['liked', 'already_liked', 'not_found', 'ambiguous']);
 
+class YouTubeMusicAuthError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = 'YouTubeMusicAuthError';
+    this.cause = cause;
+  }
+}
+
+function isAuthError(error) {
+  const message = String(error?.message || '');
+  return error?.payload?.exception?.authFailure === true
+    || error?.httpStatus === 401
+    || message.includes('HTTP 401')
+    || message.includes('Unauthorized')
+    || message.includes('You must be signed in');
+}
+
+function youtubeMusicAuthError(operation, error) {
+  return new YouTubeMusicAuthError(
+    `YouTube Music authentication expired or is invalid during ${operation}. Re-authenticate with \`npm run auth:ytmusic:browser\` before continuing. Original error: ${error.message}`,
+    error,
+  );
+}
+
 function isRetryableError(error) {
   const message = String(error?.message || '');
+  if (isAuthError(error)) return false;
   if (message.includes('HTTP 400') || message.includes('Bad Request')) return false;
   return true;
 }
@@ -99,6 +124,7 @@ async function processTrack(track, options, likedVideoIds) {
       onRetry: (error, attempt) => log.debug(`Retrying YouTube Music search for ${track.title}, attempt ${attempt}`, error.message),
     });
   } catch (error) {
+    if (isAuthError(error)) throw youtubeMusicAuthError('search', error);
     throw new Error(`YouTube Music search failed: ${error.message}`);
   }
 
@@ -127,6 +153,7 @@ async function processTrack(track, options, likedVideoIds) {
       onRetry: (error, attempt) => log.debug(`Retrying YouTube Music like for ${match.videoId}, attempt ${attempt}`, error.message),
     });
   } catch (error) {
+    if (isAuthError(error)) throw youtubeMusicAuthError(`like for videoId ${match.videoId}`, error);
     throw new Error(`YouTube Music like failed for videoId ${match.videoId}: ${error.message}`);
   }
   likedVideoIds?.add(match.videoId);
@@ -161,6 +188,7 @@ async function syncLibrary(options = {}) {
       likedVideoIds = await ytmusic.getLikedVideoIds();
       log.line(`Loaded ${likedVideoIds.size} existing YouTube Music liked IDs.`);
     } catch (error) {
+      if (isAuthError(error)) throw youtubeMusicAuthError('liked-song preload', error);
       log.failed(`Could not preload YouTube Music liked IDs; continuing without already-liked detection. ${error.message}`);
     }
   }
@@ -207,6 +235,10 @@ async function syncLibrary(options = {}) {
         log.success(`${track.title} liked (${record.match.confidence} ${record.match.score})`);
       }
     } catch (error) {
+      if (error instanceof YouTubeMusicAuthError) {
+        log.failed(error.message);
+        throw error;
+      }
       results.tracks[track.spotifyTrackId] = recordFor(track, 'failed', { error: error.message });
       log.failed(`${track.title}: ${error.message}`);
     }
@@ -251,4 +283,5 @@ module.exports = {
   syncLibrary,
   loadSpotifyLibrary,
   showReview,
+  isAuthError,
 };

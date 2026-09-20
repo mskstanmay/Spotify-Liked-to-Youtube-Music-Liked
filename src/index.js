@@ -37,6 +37,16 @@ Options:
 `);
 }
 
+function ytmusicDiagnosticFailure(error) {
+  if (error?.payload?.exception?.authFailure || error?.httpStatus === 401) {
+    return `AUTHENTICATION FAILURE ${error.message}`;
+  }
+  if (error?.httpStatus === 400 || String(error?.message || '').includes('HTTP 400')) {
+    return `YOUTUBE MUSIC API FAILURE ${error.message}`;
+  }
+  return `FAILED ${error.message}`;
+}
+
 function hasFlag(name) {
   return process.argv.includes(name);
 }
@@ -246,7 +256,7 @@ async function authYtmusicDiagnostic() {
     const info = await ytmusic.accountInfoDiagnostic();
     process.stdout.write(`${JSON.stringify(info, null, 2)}\n\n`);
   } catch (error) {
-    process.stdout.write(`FAILED ${error.message}\n\n`);
+    process.stdout.write(`${ytmusicDiagnosticFailure(error)}\n\n`);
   }
 
   process.stdout.write('LIKED SONGS READ:\n');
@@ -259,7 +269,7 @@ async function authYtmusicDiagnostic() {
       requests: liked.requests,
     }, null, 2)}\n`);
   } catch (error) {
-    process.stdout.write(`FAILED ${error.message}\n`);
+    process.stdout.write(`${ytmusicDiagnosticFailure(error)}\n`);
   }
 }
 

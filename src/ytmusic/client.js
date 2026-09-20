@@ -66,7 +66,12 @@ function runPython(args, options = {}) {
       }
 
       if (code !== 0 || payload.ok === false) {
-        reject(new Error(payload.error || stderr.trim() || `YouTube Music bridge exited with code ${code}`));
+        const error = new Error(payload.error || stderr.trim() || `YouTube Music bridge exited with code ${code}`);
+        error.payload = payload;
+        error.stderr = stderr;
+        error.code = code;
+        if (payload.exception?.httpStatus) error.httpStatus = payload.exception.httpStatus;
+        reject(error);
         return;
       }
       resolve(payload);
@@ -81,11 +86,11 @@ function searchTrack(track) {
 }
 
 function likeTrack(videoId) {
-  return runPython(['like', '--video-id', videoId]);
+  return runPython(['like', `--video-id=${videoId}`]);
 }
 
 function likeAndVerifyTrack(videoId, verifyLimit = 10000) {
-  return runPython(['like-verify', '--video-id', videoId, '--verify-limit', String(verifyLimit)], {
+  return runPython(['like-verify', `--video-id=${videoId}`, '--verify-limit', String(verifyLimit)], {
     trace: true,
     forwardStderr: true,
   });
@@ -117,6 +122,10 @@ function likedSongsDiagnostic(limit = 25) {
   });
 }
 
+function likeArgumentDiagnostic(videoId) {
+  return runPython(['echo-video-id', `--video-id=${videoId}`]);
+}
+
 function traceSearchTrack(track, options = {}) {
   const query = `${track.title} ${track.artists.join(' ')}`.trim();
   const args = ['search', '--query', query, '--limit', String(config.ytmusic.searchLimit)];
@@ -137,5 +146,6 @@ module.exports = {
   authInitDiagnostic,
   accountInfoDiagnostic,
   likedSongsDiagnostic,
+  likeArgumentDiagnostic,
   traceSearchTrack,
 };

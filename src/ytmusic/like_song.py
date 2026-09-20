@@ -224,15 +224,34 @@ def auth_summary(yt):
 def exception_summary(exc):
     message = str(exc)
     status = None
+    auth_failure = False
+    auth_failure_reason = None
     if "HTTP 400" in message:
         status = 400
     elif "HTTP 401" in message:
         status = 401
+        auth_failure = True
+        auth_failure_reason = "http_401"
     elif "HTTP 403" in message:
         status = 403
+    elif (
+        "signInEndpoint" in message
+        or "Sign in to listen" in message
+        or "You must be signed in" in message
+        or ("activeAccountHeaderRenderer" in message and "Unable to find 'header'" in message)
+    ):
+        status = 401
+        auth_failure = True
+        auth_failure_reason = "signed_out_response"
+        message = (
+            "YouTube Music authentication expired or is invalid. "
+            "The account endpoint returned signed-out content."
+        )
     return {
         "type": exc.__class__.__name__,
         "httpStatus": status,
+        "authFailure": auth_failure,
+        "authFailureReason": auth_failure_reason,
         "message": message,
     }
 
@@ -350,6 +369,10 @@ def command_liked_ids(args):
     return {"ok": True, "videoIds": ids, "count": len(ids), "requests": getattr(yt, "_diagnostic_session", DiagnosticSession()).events}
 
 
+def command_echo_video_id(args):
+    return {"ok": True, "videoId": args.video_id}
+
+
 def main():
     parser = argparse.ArgumentParser(description="YouTube Music JSON bridge for the Spotify sync app.")
     parser.add_argument("--auth", required=True)
@@ -373,6 +396,9 @@ def main():
     like = subparsers.add_parser("like")
     like.add_argument("--video-id", required=True)
 
+    echo_video_id = subparsers.add_parser("echo-video-id")
+    echo_video_id.add_argument("--video-id", required=True)
+
     like_verify = subparsers.add_parser("like-verify")
     like_verify.add_argument("--video-id", required=True)
     like_verify.add_argument("--verify-limit", type=int, default=10000)
@@ -392,6 +418,8 @@ def main():
             payload = command_setup_browser(args)
         elif args.command == "like":
             payload = command_like(args)
+        elif args.command == "echo-video-id":
+            payload = command_echo_video_id(args)
         elif args.command == "like-verify":
             payload = command_like_verify(args)
         elif args.command == "liked-ids":
@@ -400,7 +428,8 @@ def main():
             raise ValueError(f"Unknown command: {args.command}")
         print(json.dumps(payload, ensure_ascii=True))
     except Exception as exc:
-        payload = {"ok": False, "error": str(exc), "exception": exception_summary(exc)}
+        summary = exception_summary(exc)
+        payload = {"ok": False, "error": summary["message"], "exception": summary}
         print(json.dumps(payload, ensure_ascii=True))
         sys.exit(1)
 
