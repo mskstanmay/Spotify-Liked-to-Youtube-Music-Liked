@@ -66,22 +66,55 @@ function numberOption(name) {
 
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: 'inherit', ...options });
-    child.on('error', reject);
+    const { timeoutMs = config.ytmusic.authTimeoutMs, ...spawnOptions } = options;
+    const child = spawn(command, args, { stdio: 'inherit', ...spawnOptions });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(reject, new Error(`${command} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.on('error', (error) => finish(reject, error));
     child.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} ${args.join(' ')} exited with code ${code}`));
+      if (code === 0) finish(resolve);
+      else finish(reject, new Error(`${command} exited with code ${code}`));
     });
   });
 }
 
+function sanitizedYtmusicSetupEnv() {
+  const childEnv = { ...process.env };
+  for (const name of [
+    'DATABASE_URL', 'SESSION_SECRET', 'TOKEN_ENCRYPTION_KEY',
+    'SPOTIFY_CLIENT_SECRET', 'GOOGLE_CLIENT_SECRET', 'YTMUSIC_CLIENT_SECRET',
+  ]) delete childEnv[name];
+  return childEnv;
+}
+
 function runWithInput(command, args, input, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ['pipe', 'inherit', 'inherit'], ...options });
-    child.on('error', reject);
+    const { timeoutMs = config.ytmusic.authTimeoutMs, ...spawnOptions } = options;
+    const child = spawn(command, args, { stdio: ['pipe', 'inherit', 'inherit'], ...spawnOptions });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(reject, new Error(`${command} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.on('error', (error) => finish(reject, error));
     child.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`${command} ${args.join(' ')} exited with code ${code}`));
+      if (code === 0) finish(resolve);
+      else finish(reject, new Error(`${command} exited with code ${code}`));
     });
     child.stdin.end(input);
   });
@@ -154,9 +187,11 @@ async function authYtmusic() {
   await ensureDir(config.dataDir);
   process.stdout.write('Starting ytmusicapi OAuth setup. Follow the prompts in this terminal.\n');
   const args = ['oauth', '--file', config.ytmusic.authPath];
-  if (config.ytmusic.clientId) args.push('--client-id', config.ytmusic.clientId);
-  if (config.ytmusic.clientSecret) args.push('--client-secret', config.ytmusic.clientSecret);
-  await run(ytmusicapi, args, { cwd: config.rootDir });
+  if (config.ytmusic.clientId && config.ytmusic.clientSecret) {
+    await runWithInput(ytmusicapi, args, `${config.ytmusic.clientId}\n${config.ytmusic.clientSecret}\n`, { cwd: config.rootDir, env: sanitizedYtmusicSetupEnv() });
+  } else {
+    await run(ytmusicapi, args, { cwd: config.rootDir, env: sanitizedYtmusicSetupEnv() });
+  }
   process.stdout.write(`YouTube Music auth saved under ${config.ytmusic.authPath}\n`);
 }
 
@@ -187,7 +222,10 @@ async function authYtmusicBrowser() {
     'setup-browser',
     '--output',
     config.ytmusic.browserAuthPath,
-  ], `${JSON.stringify(headers)}\n`, { cwd: config.rootDir });
+  ], `${JSON.stringify(headers)}\n`, {
+    cwd: config.rootDir,
+    env: sanitizedYtmusicSetupEnv(),
+  });
 }
 
 async function traceTrack() {

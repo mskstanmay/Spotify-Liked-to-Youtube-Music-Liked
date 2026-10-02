@@ -35,6 +35,8 @@ module.exports = {
     clientSecret: process.env.YTMUSIC_CLIENT_SECRET || '',
     searchLimit: numberFromEnv('YTMUSIC_SEARCH_LIMIT', 10),
     likedSongsLimit: numberFromEnv('YTMUSIC_LIKED_SONGS_LIMIT', 10000),
+    subprocessTimeoutMs: Math.max(1, numberFromEnv('PYTHON_SUBPROCESS_TIMEOUT_MS', 30_000)),
+    authTimeoutMs: Math.max(1, numberFromEnv('YTMUSIC_AUTH_TIMEOUT_MS', 10 * 60 * 1000)),
   },
   sync: {
     resultsPath: path.join(dataDir, 'sync-results.json'),

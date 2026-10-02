@@ -3,6 +3,23 @@ const path = require('node:path');
 const config = require('../config');
 const { exists } = require('../utils/files');
 
+const SERVER_ONLY_ENV = [
+  'DATABASE_URL',
+  'SESSION_SECRET',
+  'TOKEN_ENCRYPTION_KEY',
+  'SPOTIFY_CLIENT_SECRET',
+  'GOOGLE_CLIENT_SECRET',
+];
+
+class PythonBridgeError extends Error {
+  constructor(message, { code, retryable = false } = {}) {
+    super(message);
+    this.name = 'PythonBridgeError';
+    this.code = code;
+    this.retryable = retryable;
+  }
+}
+
 function pythonExecutable() {
   return process.platform === 'win32'
     ? path.join(config.rootDir, '.venv', 'Scripts', 'python.exe')
@@ -17,15 +34,9 @@ async function ensurePythonReady() {
   return python;
 }
 
-function runPython(args, options = {}) {
-  return new Promise(async (resolve, reject) => {
-    let python;
-    try {
-      python = await ensurePythonReady();
-    } catch (error) {
-      reject(error);
-      return;
-    }
+async function runPython(args, options = {}) {
+  const python = await (options.ensurePythonReadyImpl || ensurePythonReady)();
+  return new Promise((resolve, reject) => {
 
     const fullArgs = [
       path.join(config.rootDir, 'src', 'ytmusic', 'like_song.py'),
@@ -33,48 +44,70 @@ function runPython(args, options = {}) {
       config.ytmusic.authPath,
       '--browser-auth',
       config.ytmusic.browserAuthPath,
-      '--client-id',
-      config.ytmusic.clientId,
-      '--client-secret',
-      config.ytmusic.clientSecret,
       ...(options.trace ? ['--trace'] : []),
       ...args,
     ];
 
-    const child = spawn(python, fullArgs, {
-      cwd: config.rootDir,
-      env: process.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const childEnv = { ...process.env };
+    for (const name of SERVER_ONLY_ENV) delete childEnv[name];
+    if (args[0] === 'search') {
+      delete childEnv.YTMUSIC_CLIENT_ID;
+      delete childEnv.YTMUSIC_CLIENT_SECRET;
+    }
+    const spawnImpl = options.spawnImpl || spawn;
+    let child;
+    try {
+      child = spawnImpl(python, fullArgs, {
+        cwd: config.rootDir,
+        env: childEnv,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
 
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    const timeoutMs = options.timeoutMs ?? config.ytmusic.subprocessTimeoutMs;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback(value);
+    };
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      finish(reject, new PythonBridgeError('The YouTube Music operation timed out and can be retried.', { code: 'PYTHON_TIMEOUT', retryable: true }));
+    }, timeoutMs);
+    timer.unref?.();
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
       if (options.forwardStderr) process.stderr.write(chunk);
     });
-    child.on('error', reject);
+    child.on('error', (error) => finish(reject, error));
     child.on('close', (code) => {
+      if (settled) return;
       const text = stdout.trim();
       let payload;
       try {
         payload = text ? JSON.parse(text.split(/\r?\n/).at(-1)) : {};
       } catch (error) {
-        reject(new Error(`Could not parse YouTube Music response. stderr=${stderr.trim()} stdout=${stdout.trim()}`));
+        finish(reject, new PythonBridgeError('Could not parse the YouTube Music bridge response.', { code: 'PYTHON_INVALID_RESPONSE', retryable: true }));
         return;
       }
 
       if (code !== 0 || payload.ok === false) {
         const error = new Error(payload.error || stderr.trim() || `YouTube Music bridge exited with code ${code}`);
         error.payload = payload;
-        error.stderr = stderr;
         error.code = code;
         if (payload.exception?.httpStatus) error.httpStatus = payload.exception.httpStatus;
-        reject(error);
+        finish(reject, error);
         return;
       }
-      resolve(payload);
+      finish(resolve, payload);
     });
   });
 }
@@ -148,4 +181,5 @@ module.exports = {
   likedSongsDiagnostic,
   likeArgumentDiagnostic,
   traceSearchTrack,
+  PythonBridgeError,
 };

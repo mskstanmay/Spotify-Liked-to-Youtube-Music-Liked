@@ -8,6 +8,8 @@ async function withRetries(fn, options = {}) {
     baseDelayMs = 500,
     shouldRetry = () => true,
     onRetry = () => {},
+    maxDelayMs = 60_000,
+    sleepFn = sleep,
   } = options;
 
   let lastError;
@@ -17,9 +19,11 @@ async function withRetries(fn, options = {}) {
     } catch (error) {
       lastError = error;
       if (attempt >= retries || !shouldRetry(error)) break;
-      const delay = baseDelayMs * (2 ** attempt);
+      const exponentialDelay = baseDelayMs * (2 ** attempt);
+      const requestedDelay = Number.isFinite(error.retryAfterMs) ? error.retryAfterMs : exponentialDelay;
+      const delay = Math.max(0, Math.min(requestedDelay, maxDelayMs));
       onRetry(error, attempt + 1, delay);
-      await sleep(delay);
+      await sleepFn(delay);
     }
   }
   throw lastError;
