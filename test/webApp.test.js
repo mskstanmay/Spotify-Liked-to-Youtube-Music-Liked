@@ -4,8 +4,10 @@ const crypto = require('node:crypto');
 const { encryptSecret, decryptSecret, csrfToken, hashToken } = require('../src/auth/security');
 const { authorizationUrl: spotifyAuthorizationUrl } = require('../src/providers/spotify/web');
 const { authorizationUrl: googleAuthorizationUrl, likeVideo, ratings } = require('../src/providers/youtube/web');
-const { migrationJson } = require('../src/migration/serialize');
-const { publicWorkerError, candidateRows, refreshCounts, MigrationWorker } = require('../src/worker/migrationWorker');
+const { migrationJson, trackJson } = require('../src/migration/serialize');
+const { counterData } = require('../src/migration/state');
+const { trackWhere } = require('../src/migration/routes');
+const { publicWorkerError, candidateRows, refreshCounts, MigrationWorker, isUsableAutoReviewMatch, scanResultData } = require('../src/worker/migrationWorker');
 const { withRetries } = require('../src/utils/retry');
 const { buildApp } = require('../src/api/app');
 
@@ -182,14 +184,65 @@ test('review candidate must belong to the owned review track', async () => {
   assert.equal(response.statusCode, 202);
   assert.equal(prisma.calls.trackUpdates[0].matchedYoutubeVideoId, '-safe-id');
   assert.equal(prisma.calls.trackUpdates[0].status, 'READY');
+  assert.equal(prisma.calls.trackUpdates[0].needsReview, false);
   await app.close();
 });
 
 test('migration progress serializer exposes safe counters and no internal lock', () => {
-  const result = migrationJson(migration({ status: 'RUNNING', currentTrackTitle: 'Track', currentTrackArtist: 'Artist', workerId: 'secret-worker' }));
+  const result = migrationJson(migration({ status: 'RUNNING', currentTrackTitle: 'Track', currentTrackArtist: 'Artist', workerId: 'secret-worker', likedCount: 3 }), { addedReviewCount: 1, needsReviewCount: 2 });
   assert.equal(result.status, 'running');
   assert.deepEqual(result.currentTrack, { title: 'Track', artist: 'Artist' });
+  assert.equal(result.addedCount, 2);
+  assert.equal(result.addedReviewCount, 1);
+  assert.equal(result.needsReviewCount, 2);
   assert.equal(result.workerId, undefined);
+});
+
+test('SaaS scan classification auto-processes only safe medium matches', () => {
+  const base = {
+    matched: false, closeSecond: false, confidence: 'MEDIUM', score: 0.78,
+    reason: 'Best score 0.78 is below threshold 0.85.', candidates: [{}],
+    selectedCandidate: { videoId: 'video', title: 'Song', artists: ['Artist'], reasons: ['duration mismatch'] },
+  };
+  assert.equal(isUsableAutoReviewMatch(base, 0.72), true);
+  assert.deepEqual(scanResultData(base, 0.72), {
+    status: 'READY', needsReview: true, matchedYoutubeVideoId: 'video', matchedYoutubeTitle: 'Song',
+    matchedYoutubeArtists: ['Artist'], confidence: 'MEDIUM', score: 0.78,
+    reason: 'Best score 0.78 is below threshold 0.85.',
+  });
+  assert.equal(scanResultData({ ...base, score: 0.71 }, 0.72).status, 'REVIEW');
+  assert.equal(scanResultData({ ...base, closeSecond: true }, 0.72).status, 'REVIEW');
+  assert.equal(scanResultData({ ...base, selectedCandidate: { ...base.selectedCandidate, reasons: ['artist mismatch'] } }, 0.72).status, 'REVIEW');
+  assert.equal(scanResultData({ ...base, selectedCandidate: { ...base.selectedCandidate, reasons: ['version mismatch'] } }, 0.72).status, 'REVIEW');
+  assert.equal(scanResultData({ ...base, confidence: 'LOW' }, 0.72).status, 'REVIEW');
+});
+
+test('track serialization exposes review classification and matched result detail', () => {
+  const result = trackJson({
+    id: 'track', position: 1, spotifyTrackId: 'spotify', spotifyTitle: 'Source', spotifyArtists: ['Source Artist'],
+    spotifyAlbum: 'Album', spotifyDurationMs: 1000, spotifyUrl: '', matchedYoutubeVideoId: 'video',
+    matchedYoutubeTitle: 'Match', matchedYoutubeArtists: ['Match Artist'], confidence: 'MEDIUM', score: 0.78,
+    reason: 'duration mismatch', needsReview: true, status: 'LIKED', errorMessage: null,
+  });
+  assert.equal(result.needsReview, true);
+  assert.equal(result.resultCategory, 'added_review');
+  assert.equal(result.match.title, 'Match');
+  assert.equal(result.match.score, 0.78);
+  assert.equal(result.match.reason, 'duration mismatch');
+});
+
+test('result filters map to safe status and review predicates', () => {
+  assert.deepEqual(trackWhere('migration', { result: 'added_review' }), { migrationId: 'migration', status: 'LIKED', needsReview: true });
+  assert.deepEqual(trackWhere('migration', { result: 'failed' }), { migrationId: 'migration', status: { in: ['FAILED', 'NOT_FOUND'] } });
+  assert.deepEqual(trackWhere('migration', { needsReview: true }), { migrationId: 'migration', needsReview: true });
+});
+
+test('invalid result filters are rejected before reaching Prisma', async () => {
+  const { app, cookie } = await testApp();
+  const response = await app.inject({ method: 'GET', url: '/api/migrations/mine/tracks?result=not-a-result', headers: { cookie } });
+  assert.equal(response.statusCode, 400);
+  assert.equal(response.json().error.code, 'INVALID_QUERY');
+  await app.close();
 });
 
 test('worker error states distinguish authentication, quota, and temporary failure', () => {
@@ -244,6 +297,22 @@ test('progress recomputation preserves matches and review queue counts', async (
   assert.equal(updates[0].reviewCount, 1);
   assert.equal(updates[0].processedTracks, 3);
   assert.equal(updates[0].confidentCount, 2);
+  assert.equal(updates[0].addedReviewCount, undefined);
+  assert.equal(updates[0].needsReviewCount, undefined);
+});
+
+test('counter recomputation derives review totals without persisting them', () => {
+  const counters = counterData([
+    { status: 'LIKED', needsReview: false, _count: { _all: 2 } },
+    { status: 'LIKED', needsReview: true, _count: { _all: 1 } },
+    { status: 'ALREADY_LIKED', needsReview: true, _count: { _all: 1 } },
+    { status: 'REVIEW', needsReview: false, _count: { _all: 1 } },
+  ], 4, 'LIKING');
+  assert.equal(counters.likedCount, 3);
+  assert.equal(counters.addedReviewCount, 1);
+  assert.equal(counters.needsReviewCount, 2);
+  assert.equal(counters.alreadyLikedCount, 1);
+  assert.equal(counters.reviewCount, 1);
 });
 
 test('worker claim predicates include phase, status, lease expiry, and fencing version', async () => {

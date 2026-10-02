@@ -14,6 +14,13 @@ function optionalInt(name) {
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
+function score(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 && value <= 1 ? value : fallback;
+}
+
 function webConfig(overrides = {}) {
   const port = int('PORT', 3000);
   const apiBaseUrl = process.env.API_BASE_URL || `http://127.0.0.1:${port}`;
@@ -43,6 +50,7 @@ function webConfig(overrides = {}) {
     maxRetries: int('MAX_RETRIES', 3),
     pythonTimeoutMs: int('PYTHON_SUBPROCESS_TIMEOUT_MS', 30_000),
     migrationMaxTracks: optionalInt('MIGRATION_MAX_TRACKS'),
+    autoReviewMinScore: score('AUTO_REVIEW_MIN_SCORE', 0.72),
     requireWorkerReady: nodeEnv === 'production',
     workerReadyMaxAgeMs: int('WORKER_READY_MAX_AGE_MS', Math.max(30_000, workerLeaseMs)),
     spotify: {

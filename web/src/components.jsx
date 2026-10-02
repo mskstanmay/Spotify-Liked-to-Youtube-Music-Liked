@@ -70,7 +70,8 @@ export function ProgressBar({ value }) {
   return <div className="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow={Math.round(normalized)}><span style={{ width: `${normalized}%` }} /></div>;
 }
 
-export function Stat({ value, label, tone = '' }) {
+export function Stat({ value, label, tone = '', onClick }) {
+  if (onClick) return <button type="button" className={`stat stat-button ${tone}`} onClick={onClick}><strong>{Number(value || 0).toLocaleString()}</strong><span>{label}</span></button>;
   return <div className={`stat ${tone}`}><strong>{Number(value || 0).toLocaleString()}</strong><span>{label}</span></div>;
 }
 

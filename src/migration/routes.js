@@ -2,15 +2,20 @@ const { z } = require('zod');
 const ytmusic = require('../ytmusic/client');
 const { matchTrack } = require('../matching/trackMatcher');
 const { migrationJson, trackJson } = require('./serialize');
-const { countMigrationTracks } = require('./state');
+const { countMigrationTracks, persistedCounterData } = require('./state');
 const { migrationEventId, shouldSendMigration, migrationEvent } = require('./sse');
 const { connectionState } = require('../providers/connectionHealth');
 
-const listQuery = z.object({
-  status: z.string().optional(),
+const paginationQuery = z.object({
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(100).default(25),
 });
+
+const trackListQuery = paginationQuery.extend({
+  status: z.enum(['pending', 'scanning', 'ready', 'review', 'liking', 'liked', 'already_liked', 'skipped', 'not_found', 'failed']).optional(),
+  result: z.enum(['added', 'added_review', 'already_existed', 'failed', 'manual_review', 'not_found', 'skipped', 'pending']).optional(),
+  needsReview: z.enum(['true', 'false']).transform((value) => value === 'true').optional(),
+}).refine((value) => !(value.status && value.result), { message: 'Choose either status or result, not both.' });
 
 const createMigrationBody = z.object({
   trackLimit: z.number().int().min(1).max(10_000).nullable().optional(),
@@ -18,6 +23,29 @@ const createMigrationBody = z.object({
 
 async function ownedMigration(prisma, userId, id, include = undefined) {
   return prisma.migration.findFirst({ where: { id, userId }, include });
+}
+
+async function serializedMigration(prisma, migration) {
+  const counts = await countMigrationTracks(prisma, migration.id, migration.phase || 'LIKING');
+  return migrationJson(migration, counts);
+}
+
+function trackWhere(migrationId, query) {
+  const where = { migrationId };
+  if (query.status) where.status = query.status.toUpperCase();
+  if (query.needsReview !== undefined) where.needsReview = query.needsReview;
+  switch (query.result) {
+    case 'added': Object.assign(where, { status: 'LIKED', needsReview: false }); break;
+    case 'added_review': Object.assign(where, { status: 'LIKED', needsReview: true }); break;
+    case 'already_existed': where.status = 'ALREADY_LIKED'; break;
+    case 'failed': where.status = { in: ['FAILED', 'NOT_FOUND'] }; break;
+    case 'manual_review': where.status = 'REVIEW'; break;
+    case 'not_found': where.status = 'NOT_FOUND'; break;
+    case 'skipped': where.status = 'SKIPPED'; break;
+    case 'pending': where.status = { in: ['PENDING', 'SCANNING', 'READY', 'LIKING'] }; break;
+    default: break;
+  }
+  return where;
 }
 
 function notFound(reply) {
@@ -63,7 +91,7 @@ async function serializableTransaction(prisma, callback, attempts = 3) {
 function registerMigrationRoutes(app, { prisma, guards, config }) {
   app.get('/api/migrations', { preHandler: guards.required }, async (request) => {
     const migrations = await prisma.migration.findMany({ where: { userId: request.user.id }, orderBy: { createdAt: 'desc' } });
-    return { migrations: migrations.map(migrationJson) };
+    return { migrations: await Promise.all(migrations.map((migration) => serializedMigration(prisma, migration))) };
   });
 
   app.post('/api/migrations', { preHandler: guards.csrf }, async (request, reply) => {
@@ -78,12 +106,12 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
     }
     const trackLimit = requestedLimit || config.migrationMaxTracks || null;
     const migration = await prisma.migration.create({ data: { userId: request.user.id, ...(trackLimit ? { trackLimit } : {}) } });
-    return reply.code(201).send({ migration: migrationJson(migration) });
+    return reply.code(201).send({ migration: await serializedMigration(prisma, migration) });
   });
 
   app.get('/api/migrations/:id', { preHandler: guards.required }, async (request, reply) => {
     const migration = await ownedMigration(prisma, request.user.id, request.params.id);
-    return migration ? { migration: migrationJson(migration) } : notFound(reply);
+    return migration ? { migration: await serializedMigration(prisma, migration) } : notFound(reply);
   });
 
   app.post('/api/migrations/:id/scan', { preHandler: guards.csrf }, async (request, reply) => {
@@ -99,7 +127,7 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
       workerId: null, lockedUntil: null, leaseVersion: { increment: 1 },
     });
     if (!updated) return transitionConflict(reply);
-    return reply.code(202).send({ migration: migrationJson(updated) });
+    return reply.code(202).send({ migration: await serializedMigration(prisma, updated) });
   });
 
   app.post('/api/migrations/:id/start', { preHandler: guards.csrf }, async (request, reply) => {
@@ -118,7 +146,7 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
       workerId: null, lockedUntil: null, leaseVersion: { increment: 1 },
     });
     if (!updated) return transitionConflict(reply);
-    return reply.code(202).send({ migration: migrationJson(updated) });
+    return reply.code(202).send({ migration: await serializedMigration(prisma, updated) });
   });
 
   app.post('/api/migrations/:id/pause', { preHandler: guards.csrf }, async (request, reply) => {
@@ -132,7 +160,7 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
       status: 'PAUSED', workerId: null, leaseVersion: { increment: 1 },
     });
     if (!updated) return transitionConflict(reply);
-    return { migration: migrationJson(updated) };
+    return { migration: await serializedMigration(prisma, updated) };
   });
 
   app.post('/api/migrations/:id/resume', { preHandler: guards.csrf }, async (request, reply) => {
@@ -145,7 +173,7 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
       workerId: null, leaseVersion: { increment: 1 },
     });
     if (!updated) return transitionConflict(reply);
-    return reply.code(202).send({ migration: migrationJson(updated) });
+    return reply.code(202).send({ migration: await serializedMigration(prisma, updated) });
   });
 
   app.post('/api/migrations/:id/retry', { preHandler: guards.csrf }, async (request, reply) => {
@@ -168,22 +196,22 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
         const phase = searchFailures.count ? 'SCANNING' : 'LIKING';
         const status = searchFailures.count ? 'SCANNING' : 'QUEUED';
         const counters = await countMigrationTracks(tx, migration.id, phase);
-        return tx.migration.update({ where: { id: migration.id }, data: { ...counters, phase, status, lastErrorCode: null, lastErrorMessage: null, completedAt: null } });
+        return tx.migration.update({ where: { id: migration.id }, data: { ...persistedCounterData(counters), phase, status, lastErrorCode: null, lastErrorMessage: null, completedAt: null } });
       });
     } catch (error) {
       if (error.statusCode) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
       throw error;
     }
-    return reply.code(202).send({ migration: migrationJson(updated) });
+    return reply.code(202).send({ migration: await serializedMigration(prisma, updated) });
   });
 
   app.get('/api/migrations/:id/tracks', { preHandler: guards.required }, async (request, reply) => {
     const migration = await ownedMigration(prisma, request.user.id, request.params.id);
     if (!migration) return notFound(reply);
-    const parsed = listQuery.safeParse(request.query || {});
-    if (!parsed.success) return reply.code(400).send({ error: { code: 'INVALID_QUERY', message: 'Invalid pagination.' } });
-    const { page, limit, status } = parsed.data;
-    const where = { migrationId: migration.id, ...(status ? { status: status.toUpperCase() } : {}) };
+    const parsed = trackListQuery.safeParse(request.query || {});
+    if (!parsed.success) return reply.code(400).send({ error: { code: 'INVALID_QUERY', message: 'Choose a valid track filter and pagination.' } });
+    const { page, limit } = parsed.data;
+    const where = trackWhere(migration.id, parsed.data);
     const [tracks, total] = await Promise.all([
       prisma.migrationTrack.findMany({ where, orderBy: { position: 'asc' }, skip: (page - 1) * limit, take: limit }),
       prisma.migrationTrack.count({ where }),
@@ -194,7 +222,7 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
   app.get('/api/migrations/:id/reviews', { preHandler: guards.required }, async (request, reply) => {
     const migration = await ownedMigration(prisma, request.user.id, request.params.id);
     if (!migration) return notFound(reply);
-    const parsed = listQuery.safeParse(request.query || {});
+    const parsed = paginationQuery.safeParse(request.query || {});
     if (!parsed.success) return reply.code(400).send({ error: { code: 'INVALID_QUERY', message: 'Invalid pagination.' } });
     const { page, limit } = parsed.data;
     const where = { migrationId: migration.id, status: 'REVIEW' };
@@ -217,13 +245,13 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
         if (!candidate) throw routeError(400, 'INVALID_CANDIDATE', 'That candidate does not belong to this track.');
         const changed = await tx.migrationTrack.updateMany({
           where: { id: request.params.trackId, migrationId: migration.id, status: 'REVIEW' },
-          data: { status: 'READY', matchedYoutubeVideoId: candidate.videoId, matchedYoutubeTitle: candidate.title, matchedYoutubeArtists: candidate.artists, score: candidate.score, confidence: 'USER_SELECTED', reason: null },
+          data: { status: 'READY', needsReview: false, matchedYoutubeVideoId: candidate.videoId, matchedYoutubeTitle: candidate.title, matchedYoutubeArtists: candidate.artists, score: candidate.score, confidence: 'USER_SELECTED', reason: null },
         });
         if (!changed.count) throw routeError(409, 'REVIEW_ALREADY_RESOLVED', 'This review item was already resolved.');
         const currentMigration = await tx.migration.findUnique({ where: { id: migration.id } });
         const counters = await countMigrationTracks(tx, migration.id, currentMigration.phase);
         await tx.migration.update({ where: { id: migration.id }, data: {
-          ...counters,
+          ...persistedCounterData(counters),
           ...(currentMigration.status === 'COMPLETED' ? { status: 'QUEUED', completedAt: null, leaseVersion: { increment: 1 } } : {}),
         } });
       });
@@ -243,7 +271,7 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
         if (!changed.count) throw routeError(409, 'REVIEW_ALREADY_RESOLVED', 'This review item was already resolved.');
         const currentMigration = await tx.migration.findUnique({ where: { id: migration.id } });
         const counters = await countMigrationTracks(tx, migration.id, currentMigration.phase);
-        await tx.migration.update({ where: { id: migration.id }, data: counters });
+        await tx.migration.update({ where: { id: migration.id }, data: persistedCounterData(counters) });
       });
     } catch (error) {
       if (error.statusCode) return reply.code(error.statusCode).send({ error: { code: error.code, message: error.message } });
@@ -294,8 +322,8 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
         reply.raw.end();
         return;
       }
-      const serialized = migrationJson(current);
       if (shouldSendMigration(lastEventId, current)) {
+        const serialized = await serializedMigration(prisma, current);
         reply.raw.write(migrationEvent(serialized));
         lastEventId = migrationEventId(current);
         lastWriteAt = Date.now();
@@ -311,4 +339,4 @@ function registerMigrationRoutes(app, { prisma, guards, config }) {
   });
 }
 
-module.exports = { registerMigrationRoutes, ownedMigration, updateOwnedMigration, serializableTransaction };
+module.exports = { registerMigrationRoutes, ownedMigration, updateOwnedMigration, serializableTransaction, trackWhere };

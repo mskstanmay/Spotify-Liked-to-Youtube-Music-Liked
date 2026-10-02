@@ -88,3 +88,20 @@ test('low-confidence match is left for review', () => {
   assert.equal(result.matched, false);
   assert.equal(result.confidence, 'LOW');
 });
+
+test('close candidates remain unmatched and expose explicit ambiguity metadata', () => {
+  const result = matchTrack(spotify(), [candidate({ videoId: 'first' }), candidate({ videoId: 'second', durationMs: 202000 })]);
+  assert.equal(result.matched, false);
+  assert.equal(result.closeSecond, true);
+  assert.equal(result.confidence, 'MEDIUM');
+});
+
+test('medium confidence does not change shared matcher or CLI acceptance semantics', () => {
+  const result = matchTrack(
+    spotify(),
+    [candidate({ durationMs: 260000, resultType: 'video', videoType: 'MUSIC_VIDEO_TYPE_UGC' })],
+  );
+  assert.equal(result.confidence, 'MEDIUM');
+  assert.equal(result.matched, false);
+  assert.equal(result.closeSecond, false);
+});

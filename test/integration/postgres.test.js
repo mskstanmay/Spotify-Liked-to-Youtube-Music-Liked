@@ -6,6 +6,8 @@ const { MigrationWorker, LeaseLostError } = require('../../src/worker/migrationW
 const { buildApp } = require('../../src/api/app');
 const { hashToken, csrfToken } = require('../../src/auth/security');
 const { tryClaimVideoLike, completeVideoLike } = require('../../src/worker/videoLikeCoordinator');
+const { countMigrationTracks } = require('../../src/migration/state');
+const { migrationJson } = require('../../src/migration/serialize');
 
 const databaseUrl = process.env.TEST_DATABASE_URL;
 const enabled = Boolean(databaseUrl);
@@ -61,6 +63,25 @@ integration('Prisma migrations apply and explicit phase/fence columns are usable
   assert.equal(migration.leaseVersion, 0);
   assert.equal(migration.trackLimit, 3);
   assert.equal(migration.sourceTotalTracks, 120);
+  const track = await prisma.migrationTrack.create({ data: { migrationId: migration.id, position: 1, spotifyTrackId: 'schema-track', spotifyTitle: 'Song', spotifyArtists: ['Artist'] } });
+  assert.equal(track.needsReview, false);
+});
+
+integration('PostgreSQL derives added-review counters from track flags without migration columns', async () => {
+  const user = await createUser();
+  const migration = await createMigration(user.id, { status: 'COMPLETED' });
+  await prisma.migrationTrack.createMany({ data: [
+    { migrationId: migration.id, position: 1, spotifyTrackId: 'high', spotifyTitle: 'High', spotifyArtists: ['Artist'], status: 'LIKED', needsReview: false, matchedYoutubeVideoId: 'video-high' },
+    { migrationId: migration.id, position: 2, spotifyTrackId: 'medium', spotifyTitle: 'Medium', spotifyArtists: ['Artist'], status: 'LIKED', needsReview: true, matchedYoutubeVideoId: 'video-medium' },
+    { migrationId: migration.id, position: 3, spotifyTrackId: 'existing', spotifyTitle: 'Existing', spotifyArtists: ['Artist'], status: 'ALREADY_LIKED', needsReview: true, matchedYoutubeVideoId: 'video-existing' },
+  ] });
+  const counts = await countMigrationTracks(prisma, migration.id, 'LIKING');
+  const serialized = migrationJson({ ...migration, likedCount: counts.likedCount, alreadyLikedCount: counts.alreadyLikedCount }, counts);
+  assert.equal(counts.addedReviewCount, 1);
+  assert.equal(counts.needsReviewCount, 2);
+  assert.equal(serialized.addedCount, 1);
+  assert.equal(serialized.addedReviewCount, 1);
+  assert.equal(serialized.alreadyLikedCount, 1);
 });
 
 integration('PostgreSQL permits only one concurrent worker claim', async () => {
@@ -162,7 +183,7 @@ integration('real transaction resolves choose-versus-skip and skip-versus-skip r
 integration('retry cannot race RUNNING state and is single-use from a terminal state', async () => {
   const user = await createUser();
   const migration = await createMigration(user.id, { failedCount: 1 });
-  await prisma.migrationTrack.create({ data: { migrationId: migration.id, position: 1, spotifyTrackId: 'spotify', spotifyTitle: 'Song', spotifyArtists: ['Artist'], matchedYoutubeVideoId: 'video', status: 'FAILED' } });
+  const failedTrack = await prisma.migrationTrack.create({ data: { migrationId: migration.id, position: 1, spotifyTrackId: 'spotify', spotifyTitle: 'Song', spotifyArtists: ['Artist'], matchedYoutubeVideoId: 'video', status: 'FAILED', needsReview: true } });
   const { app, headers } = await authenticatedApp(user.id);
   try {
     const active = await app.inject({ method: 'POST', url: `/api/migrations/${migration.id}/retry`, headers });
@@ -172,6 +193,7 @@ integration('retry cannot race RUNNING state and is single-use from a terminal s
     const second = await app.inject({ method: 'POST', url: `/api/migrations/${migration.id}/retry`, headers });
     assert.equal(first.statusCode, 202);
     assert.equal(second.statusCode, 409);
+    assert.equal((await prisma.migrationTrack.findUnique({ where: { id: failedTrack.id } })).needsReview, true);
   } finally { await app.close(); }
 });
 

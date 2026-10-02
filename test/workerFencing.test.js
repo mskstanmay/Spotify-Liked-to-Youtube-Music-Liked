@@ -143,3 +143,18 @@ test('liking cannot complete until every required track is terminal', async () =
   assert.equal(await activeWorker.completeIfFinished(job), true);
   assert.equal(store.row.status, 'COMPLETED');
 });
+
+test('successful worker completion preserves a review-flagged match', async () => {
+  const store = memoryPrisma();
+  const track = { id: 'track', migrationId: 'migration', status: 'READY', needsReview: true };
+  store.prisma.migrationTrack = {
+    updateMany: async ({ data }) => { applyData(track, data); return { count: 1 }; },
+  };
+  store.prisma.youTubeVideoLike = { updateMany: async () => ({ count: 1 }) };
+  const activeWorker = worker(store.prisma, 'worker-a');
+  const job = await activeWorker.claim();
+  job.videoClaim = { id: 'claim', ownerId: 'worker-a:migration', leaseVersion: 1 };
+  await activeWorker.finishVideoTrack(job, track, 'LIKED');
+  assert.equal(track.status, 'LIKED');
+  assert.equal(track.needsReview, true);
+});

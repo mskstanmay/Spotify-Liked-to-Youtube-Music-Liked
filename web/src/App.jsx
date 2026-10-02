@@ -21,8 +21,8 @@ function Landing({ theme, setTheme }) {
         <div className="section-heading"><span className="eyebrow">Simple by design</span><h2>From liked to loved—without the busywork.</h2></div>
         <div className="steps-grid">
           <Step number="01" title="Connect" text="Sign in directly with Spotify and Google. We never ask for your passwords or browser cookies." />
-          <Step number="02" title="Preview" text="We scan and score each possible match. Anything uncertain waits for your review." />
-          <Step number="03" title="Move" text="Confident matches are liked for you while progress stays safely saved." />
+          <Step number="02" title="Preview" text="We score every match. Safe uncertain results are clearly flagged; ambiguous ones wait for you." />
+          <Step number="03" title="Move" text="Usable matches are liked for you while confidence and progress stay visible." />
         </div>
       </section>
       <section className="privacy-section wrap">
@@ -128,21 +128,22 @@ function ScanPage() {
 }
 
 function PreviewPage() {
-  const { id } = useParams(); const navigate = useNavigate(); const { migration, error } = useMigration(id); const [loading, setLoading] = React.useState(false);
+  const { id } = useParams(); const navigate = useNavigate(); const { migration, error } = useMigration(id); const [loading, setLoading] = React.useState(false); const [trackFilter, setTrackFilter] = React.useState('all');
   if (!migration) return error ? <ErrorPanel error={error} /> : <LoadingPage />;
+  const highConfidenceCount = Math.max(0, migration.confidentCount - migration.needsReviewCount);
   const start = async () => { setLoading(true); try { await api(`/migrations/${id}/start`, { method: 'POST' }); navigate(`/migrations/${id}/progress`); } catch { setLoading(false); } };
   return <div className="page narrow"><PageHeader eyebrow="Scan complete" title="Ready to migrate" description={`${migration.totalTracks.toLocaleString()} Spotify tracks scanned. Review the plan before anything changes.`} />
     {migration.limited && <Notice>This controlled run includes {migration.totalTracks.toLocaleString()} of {migration.sourceTotalTracks.toLocaleString()} source tracks. Completion applies only to this explicitly selected scope.</Notice>}
-    <div className="summary-hero"><div className="summary-number">{migration.totalTracks.toLocaleString()}</div><span>liked songs found</span><div className="summary-stats"><Stat value={migration.confidentCount} label="confident matches" tone="green" /><Stat value={migration.reviewCount} label="need review" tone="amber" /><Stat value={migration.notFoundCount} label="not found" /></div></div>
-    <Notice>Ambiguous tracks won't be changed automatically. You can choose them after the confident matches finish.</Notice>
+    <div className="summary-hero"><div className="summary-number">{migration.totalTracks.toLocaleString()}</div><span>liked songs found</span><div className="summary-stats"><Stat value={highConfidenceCount} label="high confidence" tone="green" /><Stat value={migration.needsReviewCount} label="will add - review" tone="amber" onClick={() => setTrackFilter('needs_review')} /><Stat value={migration.reviewCount} label="manual review" tone="amber" onClick={() => setTrackFilter('manual_review')} /><Stat value={migration.notFoundCount} label="not found" onClick={() => setTrackFilter('not_found')} /></div></div>
+    <Notice>Safe medium-confidence matches will be processed and flagged for later review. Ambiguous or unsafe matches still require your selection.</Notice>
     <div className="quota-note"><Clock3 size={17} /><p><strong>A note about YouTube limits</strong><br />YouTube limits how many likes an app can apply each day. If the quota is reached, we'll pause safely and let you resume later.</p></div>
     <div className="page-actions split"><Link className="button ghost" to="/migrate">Cancel</Link><Button variant="primary large" loading={loading} onClick={start}>Start migration <ArrowRight size={18} /></Button></div>
-    <TrackStatusPanel migrationId={id} updatedAt={migration.updatedAt} />
+    <TrackStatusPanel migrationId={id} updatedAt={migration.updatedAt} filter={trackFilter} onFilterChange={setTrackFilter} />
   </div>;
 }
 
 function ProgressPage() {
-  const { id } = useParams(); const navigate = useNavigate(); const { migration, error, refresh } = useMigration(id); const [working, setWorking] = React.useState(false);
+  const { id } = useParams(); const navigate = useNavigate(); const { migration, error, refresh } = useMigration(id); const [working, setWorking] = React.useState(false); const [trackFilter, setTrackFilter] = React.useState('all');
   React.useEffect(() => { if (migration?.status === 'completed') navigate(`/migrations/${id}/complete`, { replace: true }); }, [migration, id, navigate]);
   if (!migration) return error ? <ErrorPanel error={error} /> : <LoadingPage />;
   const pct = migration.totalTracks ? migration.processedTracks / migration.totalTracks * 100 : 0;
@@ -151,18 +152,19 @@ function ProgressPage() {
   return <div className="page progress-page"><PageHeader eyebrow={paused ? 'Progress saved' : 'In progress'} title={paused ? 'Migration paused' : 'Migrating your music'} description={paused ? migration.error?.message || 'Resume whenever you are ready.' : 'You can close this tab. The migration continues on the server.'} action={!paused ? <Button variant="secondary" loading={working} onClick={() => action('pause')} icon={<Pause size={16} />}>Pause</Button> : null} />
     {migration.status === 'authentication_required' && <Notice type="error" action={<Link className="button secondary small" to="/connections">Reconnect</Link>}>YouTube Music needs to be connected again.</Notice>}
     {migration.status === 'quota_paused' && <Notice>Daily YouTube API quota reached. No progress was lost.</Notice>}
-    <div className="progress-card"><div className="big-percent">{Math.round(pct)}<span>%</span></div><ProgressBar value={pct} /><div className="progress-count"><strong>{migration.processedTracks.toLocaleString()} / {migration.totalTracks.toLocaleString()}</strong><span>tracks processed</span></div><div className="metric-row"><Stat value={migration.likedCount} label="added" tone="green" /><Stat value={migration.alreadyLikedCount} label="already liked" /><Stat value={migration.reviewCount} label="review" tone="amber" /><Stat value={migration.failedCount} label="failed" tone={migration.failedCount ? 'red' : ''} /></div></div>
+    <div className="progress-card"><div className="big-percent">{Math.round(pct)}<span>%</span></div><ProgressBar value={pct} /><div className="progress-count"><strong>{migration.processedTracks.toLocaleString()} / {migration.totalTracks.toLocaleString()}</strong><span>tracks processed</span></div><div className="metric-row"><Stat value={migration.addedCount} label="added" tone="green" onClick={() => setTrackFilter('added')} /><Stat value={migration.addedReviewCount} label="added - review" tone="amber" onClick={() => setTrackFilter('added_review')} /><Stat value={migration.alreadyLikedCount} label="already existed" onClick={() => setTrackFilter('already_existed')} /><Stat value={migration.unsuccessfulCount} label="failed" tone={migration.unsuccessfulCount ? 'red' : ''} onClick={() => setTrackFilter('failed')} /></div></div>
+    {migration.reviewCount > 0 && <Notice action={<Link className="button secondary small" to={`/migrations/${id}/review`}>Review matches</Link>}>{migration.reviewCount.toLocaleString()} unsafe or ambiguous match{migration.reviewCount === 1 ? '' : 'es'} still require manual review.</Notice>}
     {migration.currentTrack && <div className="current-track wide"><span className="album-placeholder"><Music2 size={21} /></span><div><small>Current track</small><strong>{migration.currentTrack.title}</strong><span>{migration.currentTrack.artist}</span></div><span className="playing-bars"><i/><i/><i/></span></div>}
     {paused && <div className="page-actions"><Button variant="primary large" loading={working} onClick={() => action('resume')} icon={<Play size={17} />}>Resume migration</Button></div>}
-    <TrackStatusPanel migrationId={id} updatedAt={migration.updatedAt} />
+    <TrackStatusPanel migrationId={id} updatedAt={migration.updatedAt} filter={trackFilter} onFilterChange={setTrackFilter} />
   </div>;
 }
 
 function CompletePage() {
-  const { id } = useParams(); const navigate = useNavigate(); const { migration, error } = useMigration(id); const [retrying, setRetrying] = React.useState(false);
+  const { id } = useParams(); const navigate = useNavigate(); const { migration, error } = useMigration(id); const [retrying, setRetrying] = React.useState(false); const [trackFilter, setTrackFilter] = React.useState('all');
   if (!migration) return error ? <ErrorPanel error={error} /> : <LoadingPage />;
   const retry = async () => { setRetrying(true); try { await api(`/migrations/${id}/retry`, { method: 'POST' }); navigate(`/migrations/${id}/progress`); } finally { setRetrying(false); } };
-  return <div className="focus-page complete"><div className="success-mark"><Check size={34} /></div><div className="eyebrow">All confident matches processed</div><h1>Your migration is complete.</h1><p>{migration.totalTracks.toLocaleString()} tracks in this migration were processed. {migration.limited && `${migration.sourceTotalTracks.toLocaleString()} tracks exist in the source library; this completion covers only the selected staging scope.`} Your ambiguous matches are still waiting safely for you.</p><div className="completion-grid"><Stat value={migration.likedCount} label="added" tone="green" /><Stat value={migration.alreadyLikedCount} label="already existed" /><Stat value={migration.reviewCount} label="need review" tone="amber" /><Stat value={migration.failedCount} label="failed" tone={migration.failedCount ? 'red' : ''} /></div><div className="hero-actions">{migration.reviewCount > 0 && <Link className="button primary large" to={`/migrations/${id}/review`}>Review {migration.reviewCount.toLocaleString()} matches <ArrowRight size={18} /></Link>}{migration.failedCount > 0 && <Button variant="secondary large" loading={retrying} onClick={retry} icon={<RefreshCw size={17} />}>Retry failed</Button>}<Link className="button ghost large" to={`/migrations/${id}`}>View migration</Link></div><TrackStatusPanel migrationId={id} updatedAt={migration.updatedAt} /></div>;
+  return <div className="focus-page complete"><div className="success-mark"><Check size={34} /></div><div className="eyebrow">Migration results</div><h1>Your migration is complete.</h1><p>{migration.totalTracks.toLocaleString()} tracks in this migration were processed. {migration.limited && `${migration.sourceTotalTracks.toLocaleString()} tracks exist in the source library; this completion covers only the selected staging scope.`} Review-flagged matches stay clearly identified below.</p><div className="completion-grid"><Stat value={migration.addedCount} label="added" tone="green" onClick={() => setTrackFilter('added')} /><Stat value={migration.addedReviewCount} label="added - review" tone="amber" onClick={() => setTrackFilter('added_review')} /><Stat value={migration.alreadyLikedCount} label="already existed" onClick={() => setTrackFilter('already_existed')} /><Stat value={migration.unsuccessfulCount} label="failed" tone={migration.unsuccessfulCount ? 'red' : ''} onClick={() => setTrackFilter('failed')} /></div><div className="hero-actions">{migration.reviewCount > 0 && <Link className="button primary large" to={`/migrations/${id}/review`}>Review {migration.reviewCount.toLocaleString()} ambiguous matches <ArrowRight size={18} /></Link>}{migration.failedCount > 0 && <Button variant="secondary large" loading={retrying} onClick={retry} icon={<RefreshCw size={17} />}>Retry failed</Button>}<Link className="button ghost large" to={`/migrations/${id}`}>View migration</Link></div><TrackStatusPanel migrationId={id} updatedAt={migration.updatedAt} filter={trackFilter} onFilterChange={setTrackFilter} /></div>;
 }
 
 const trackStatusLabels = {
@@ -171,18 +173,34 @@ const trackStatusLabels = {
   not_found: 'Not found', failed: 'Failed',
 };
 
-function TrackStatusPanel({ migrationId, updatedAt }) {
+const resultCategoryLabels = {
+  added: 'Added', added_review: 'Added - Review', already_existed: 'Already existed',
+  failed: 'Failed', manual_review: 'Manual review', not_found: 'Not found', skipped: 'Skipped', pending: 'Pending',
+};
+
+const resultFilters = [
+  ['all', 'All'], ['added', 'Added'], ['added_review', 'Added - Review'],
+  ['already_existed', 'Already existed'], ['failed', 'Failed'], ['manual_review', 'Manual review'],
+  ['needs_review', 'Needs review'], ['not_found', 'Not found'],
+];
+
+function TrackStatusPanel({ migrationId, updatedAt, filter = 'all', onFilterChange = () => {} }) {
   const [tracks, setTracks] = React.useState([]);
   const [total, setTotal] = React.useState(0);
+  const [loaded, setLoaded] = React.useState(false);
   React.useEffect(() => {
     let active = true;
-    api(`/migrations/${migrationId}/tracks?page=1&limit=100`).then((body) => {
-      if (active) { setTracks(body.tracks); setTotal(body.total); }
+    setLoaded(false);
+    const filterQuery = filter === 'all' ? '' : filter === 'needs_review' ? '&needsReview=true' : `&result=${encodeURIComponent(filter)}`;
+    api(`/migrations/${migrationId}/tracks?page=1&limit=100${filterQuery}`).then((body) => {
+      if (active) { setTracks(body.tracks); setTotal(body.total); setLoaded(true); }
     }).catch(() => {});
     return () => { active = false; };
-  }, [migrationId, updatedAt]);
-  if (!tracks.length) return null;
-  return <section className="track-status-panel"><div className="track-status-heading"><h2>Track status</h2>{total > tracks.length && <span>Showing {tracks.length} of {total}</span>}</div>{tracks.map((track) => <div className="track-status-row" key={track.id}><span><strong>{track.spotify.title}</strong><small>{track.spotify.artists.join(', ')}</small></span><span className={`status-pill ${track.status}`}>{trackStatusLabels[track.status] || track.status.replaceAll('_', ' ')}</span></div>)}</section>;
+  }, [filter, migrationId, updatedAt]);
+  return <section className="track-status-panel"><div className="track-status-heading"><h2>Track results</h2>{total > tracks.length && <span>Showing {tracks.length} of {total}</span>}</div><div className="result-filters">{resultFilters.map(([value, label]) => <button type="button" className={filter === value ? 'active' : ''} onClick={() => onFilterChange(value)} key={value}>{label}</button>)}</div>{loaded && !tracks.length ? <p className="empty-results">No tracks match this filter.</p> : tracks.map((track) => {
+    const outcome = track.needsReview && track.status === 'already_liked' ? 'Already existed - Review' : track.resultCategory === 'pending' ? trackStatusLabels[track.status] : resultCategoryLabels[track.resultCategory] || trackStatusLabels[track.status] || track.status.replaceAll('_', ' ');
+    return <div className="track-status-row" key={track.id}><span className="track-source"><small>Spotify</small><strong>{track.spotify.title}</strong><small>{track.spotify.artists.join(', ')}</small></span><span className="track-match">{track.match ? <><small>YouTube Music</small><a href={track.match.externalUrl} target="_blank" rel="noreferrer"><strong>{track.match.title || 'Matched track'}</strong><ExternalLink size={13} /></a><small>{(track.match.artists || []).join(', ') || 'Unknown artist'} · {Math.round((track.match.score || 0) * 100)}% · {track.match.confidence || 'Unknown'} confidence</small>{track.needsReview && track.match.reason && <small className="review-reason">{track.match.reason}</small>}</> : <small>{track.reason || track.error?.message || 'No selected YouTube Music match'}</small>}</span><span className={`status-pill ${track.needsReview ? 'needs-review' : track.status}`}>{outcome}</span></div>;
+  })}</section>;
 }
 
 function ReviewPage() {

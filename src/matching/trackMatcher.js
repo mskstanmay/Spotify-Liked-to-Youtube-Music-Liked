@@ -160,6 +160,7 @@ function matchTrack(spotifyTrack, candidates, options = {}) {
   if (!best) {
     return {
       matched: false,
+      closeSecond: false,
       confidence: 'LOW',
       reason: 'No YouTube Music candidates returned.',
       candidates: [],
@@ -167,12 +168,13 @@ function matchTrack(spotifyTrack, candidates, options = {}) {
   }
 
   const second = scored[1];
-  const closeSecond = second && best.score - second.score < 0.04;
+  const closeSecond = Boolean(second && best.score - second.score < 0.04);
   const confidence = closeSecond ? 'MEDIUM' : confidenceFor(best.score, best.reasons);
   const matched = best.score >= threshold && confidence === 'HIGH' && !closeSecond;
 
   return {
     matched,
+    closeSecond,
     videoId: matched ? best.videoId : null,
     title: best.title,
     artists: best.artists || [],

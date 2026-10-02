@@ -179,6 +179,7 @@ test('preview scanning never invokes a mutating YouTube provider operation', asy
   assert.equal(migration.status, 'READY');
   assert.equal(migration.sourceTotalTracks, 100);
   assert.equal(tracks[0].status, 'READY');
+  assert.equal(tracks[0].needsReview, false);
 });
 
 test('structured provider operation logs use an allowlist and omit secrets and response bodies', () => {

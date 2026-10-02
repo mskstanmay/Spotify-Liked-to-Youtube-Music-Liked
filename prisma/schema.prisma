@@ -207,6 +207,7 @@ model MigrationTrack {
   confidence            String?
   score                 Float?
   reason                String?
+  needsReview           Boolean              @default(false)
   status                MigrationTrackStatus @default(PENDING)
   retryCount            Int                  @default(0)
   errorCode             String?
@@ -218,6 +219,7 @@ model MigrationTrack {
 
   @@unique([migrationId, spotifyTrackId])
   @@index([migrationId, status, position])
+  @@index([migrationId, needsReview, status])
 }
 
 model MigrationCandidate {

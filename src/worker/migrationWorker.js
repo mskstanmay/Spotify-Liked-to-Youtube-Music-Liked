@@ -4,7 +4,7 @@ const youtube = require('../providers/youtube/web');
 const ytmusic = require('../ytmusic/client');
 const { matchTrack } = require('../matching/trackMatcher');
 const { withRetries, sleep } = require('../utils/retry');
-const { countMigrationTracks, refreshCounts } = require('../migration/state');
+const { countMigrationTracks, persistedCounterData, refreshCounts } = require('../migration/state');
 const { tryClaimVideoLike, recordVideoLiked, completeVideoLike, releaseVideoLike } = require('./videoLikeCoordinator');
 const { logOperation } = require('../utils/operationLogger');
 
@@ -32,6 +32,36 @@ function candidateRows(trackId, candidates) {
     score: candidate.score ?? 0,
     reasons: candidate.reasons || [],
   }));
+}
+
+function isUsableAutoReviewMatch(result, minimumScore = 0.72) {
+  const reasons = result?.selectedCandidate?.reasons || [];
+  return Boolean(
+    !result?.matched
+    && result?.selectedCandidate
+    && result.score >= minimumScore
+    && result.confidence === 'MEDIUM'
+    && !result.closeSecond
+    && !reasons.includes('artist mismatch')
+    && !reasons.includes('version mismatch')
+  );
+}
+
+function scanResultData(result, minimumScore = 0.72) {
+  if (!result.candidates.length) return { status: 'NOT_FOUND', needsReview: false, reason: result.reason };
+  if (result.matched) return {
+    status: 'READY', needsReview: false,
+    matchedYoutubeVideoId: result.videoId, matchedYoutubeTitle: result.title, matchedYoutubeArtists: result.artists,
+    confidence: result.confidence, score: result.score, reason: null,
+  };
+  if (isUsableAutoReviewMatch(result, minimumScore)) return {
+    status: 'READY', needsReview: true,
+    matchedYoutubeVideoId: result.selectedCandidate.videoId,
+    matchedYoutubeTitle: result.selectedCandidate.title,
+    matchedYoutubeArtists: result.selectedCandidate.artists || [],
+    confidence: result.confidence, score: result.score, reason: result.reason,
+  };
+  return { status: 'REVIEW', needsReview: false, confidence: result.confidence, score: result.score, reason: result.reason };
 }
 
 function publicWorkerError(error) {
@@ -341,24 +371,21 @@ class MigrationWorker {
           candidates,
           { threshold: Number(process.env.MATCH_CONFIDENCE_THRESHOLD || 0.85) },
         );
+        const resultData = scanResultData(result, this.config.autoReviewMinScore ?? 0.72);
         await this.fencedTransaction(job, ['SCANNING'], async (tx) => {
           await tx.migrationCandidate.deleteMany({ where: { trackId: track.id } });
           if (result.candidates.length) await tx.migrationCandidate.createMany({ data: candidateRows(track.id, result.candidates) });
           await tx.migrationTrack.updateMany({
             where: { id: track.id, migrationId: job.id, status: 'SCANNING' },
-            data: result.candidates.length === 0
-              ? { status: 'NOT_FOUND', reason: result.reason }
-              : result.matched
-                ? { status: 'READY', matchedYoutubeVideoId: result.videoId, matchedYoutubeTitle: result.title, matchedYoutubeArtists: result.artists, confidence: result.confidence, score: result.score, reason: null }
-                : { status: 'REVIEW', confidence: result.confidence, score: result.score, reason: result.reason },
+            data: resultData,
           });
           const counters = await countMigrationTracks(tx, job.id, 'SCANNING');
-          await tx.migration.update({ where: { id: job.id }, data: counters });
+          await tx.migration.update({ where: { id: job.id }, data: persistedCounterData(counters) });
         });
         this.operation('info', job, {
           trackId: track.id, operation: 'search', provider: 'youtube_music',
           durationMs: Date.now() - searchStartedAt,
-          result: result.candidates.length === 0 ? 'not_found' : result.matched ? 'ready' : 'review',
+          result: resultData.status === 'NOT_FOUND' ? 'not_found' : resultData.status === 'REVIEW' ? 'review' : resultData.needsReview ? 'ready_review' : 'ready',
         });
       } catch (error) {
         if (error instanceof LeaseLostError) throw error;
@@ -372,7 +399,7 @@ class MigrationWorker {
             data: { status: 'FAILED', errorCode: 'SEARCH_FAILED', errorMessage: 'We could not search YouTube Music for this track.' },
           });
           const counters = await countMigrationTracks(tx, job.id, 'SCANNING');
-          await tx.migration.update({ where: { id: job.id }, data: counters });
+          await tx.migration.update({ where: { id: job.id }, data: persistedCounterData(counters) });
         });
       }
       if (this.config.requestDelayMs) await sleep(this.config.requestDelayMs);
@@ -385,7 +412,7 @@ class MigrationWorker {
       await tx.migration.update({
         where: { id: job.id },
         data: {
-          ...counters,
+          ...persistedCounterData(counters),
           status: job.startedAt ? 'QUEUED' : 'READY',
           phase: 'LIKING',
           currentTrackTitle: null,
@@ -398,7 +425,7 @@ class MigrationWorker {
   async migrate(job) {
     await this.fencedTransaction(job, ['QUEUED', 'RUNNING'], async (tx) => {
       const counters = await countMigrationTracks(tx, job.id, 'LIKING');
-      await tx.migration.update({ where: { id: job.id }, data: { ...counters, status: 'RUNNING', phase: 'LIKING', startedAt: job.startedAt || new Date() } });
+      await tx.migration.update({ where: { id: job.id }, data: { ...persistedCounterData(counters), status: 'RUNNING', phase: 'LIKING', startedAt: job.startedAt || new Date() } });
     });
 
     const user = await this.prisma.user.findUnique({ where: { id: job.userId }, include: { youtubeConnection: true } });
@@ -484,7 +511,7 @@ class MigrationWorker {
       }
       await this.fencedTransaction(job, ['RUNNING'], async (tx) => {
         const counters = await countMigrationTracks(tx, job.id, 'LIKING');
-        await tx.migration.update({ where: { id: job.id }, data: counters });
+        await tx.migration.update({ where: { id: job.id }, data: persistedCounterData(counters) });
       });
       if (this.config.requestDelayMs) await sleep(this.config.requestDelayMs);
     }
@@ -497,7 +524,7 @@ class MigrationWorker {
     return this.fencedTransaction(job, ['RUNNING'], async (tx) => {
       const counters = await countMigrationTracks(tx, job.id, 'LIKING');
       const remaining = await tx.migrationTrack.count({ where: { migrationId: job.id, status: { in: ['PENDING', 'SCANNING', 'READY', 'LIKING'] } } });
-      await tx.migration.update({ where: { id: job.id }, data: { ...counters, ...(remaining === 0 ? { status: 'COMPLETED', completedAt: new Date(), currentTrackTitle: null, currentTrackArtist: null } : {}) } });
+      await tx.migration.update({ where: { id: job.id }, data: { ...persistedCounterData(counters), ...(remaining === 0 ? { status: 'COMPLETED', completedAt: new Date(), currentTrackTitle: null, currentTrackArtist: null } : {}) } });
       return remaining === 0;
     });
   }
@@ -542,4 +569,4 @@ class MigrationWorker {
   }
 }
 
-module.exports = { MigrationWorker, LeaseLostError, refreshCounts, publicWorkerError, candidateRows };
+module.exports = { MigrationWorker, LeaseLostError, refreshCounts, publicWorkerError, candidateRows, isUsableAutoReviewMatch, scanResultData };
