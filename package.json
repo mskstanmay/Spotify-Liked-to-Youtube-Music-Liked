@@ -5,6 +5,22 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
+    "web": "node src/api/server.js",
+    "web:dev": "concurrently -n api,worker,web -c cyan,magenta,green \"npm run api:dev\" \"npm run worker:dev\" \"npm run frontend:dev\"",
+    "api:dev": "node --watch src/api/server.js",
+    "worker": "node src/worker/index.js",
+    "worker:dev": "node --watch src/worker/index.js",
+    "frontend:dev": "vite --config web/vite.config.js",
+    "frontend:build": "vite build --config web/vite.config.js",
+    "frontend:preview": "vite preview --config web/vite.config.js",
+    "db:generate": "prisma generate",
+    "db:up": "docker compose up -d --wait postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:status": "prisma migrate status",
+    "staging:preflight": "node src/staging/preflight.js",
+    "check": "npm test && npm run frontend:build",
     "auth:spotify": "node src/index.js auth:spotify",
     "auth:ytmusic": "node src/index.js auth:ytmusic",
     "auth:ytmusic:browser": "node src/index.js auth:ytmusic:browser",
@@ -13,7 +29,8 @@
     "sync": "node src/index.js sync",
     "retry": "node src/index.js retry",
     "review": "node src/index.js review",
-    "test": "node --test"
+    "test": "node --test",
+    "test:integration": "node --test test/integration/*.test.js"
   },
   "repository": {
     "type": "git",
@@ -23,11 +40,34 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "bugs": {
     "url": "https://github.com/mskstanmay/Spotify-Liked-to-Youtube-Music-Liked/issues"
   },
   "homepage": "https://github.com/mskstanmay/Spotify-Liked-to-Youtube-Music-Liked#readme",
   "dependencies": {
-    "dotenv": "^18.0.0"
+    "@fastify/cookie": "^11.0.2",
+    "@fastify/cors": "^11.1.0",
+    "@fastify/helmet": "^13.0.2",
+    "@fastify/rate-limit": "^10.3.0",
+    "@fastify/static": "^10.1.4",
+    "@prisma/client": "6.12.0",
+    "dotenv": "^18.0.0",
+    "fastify": "^5.6.2",
+    "lucide-react": "^0.544.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.3",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
+    "@vitejs/plugin-react": "^5.0.4",
+    "concurrently": "^9.2.1",
+    "prisma": "6.12.0",
+    "tailwindcss": "^4.1.14",
+    "vite": "^7.1.9"
   }
 }

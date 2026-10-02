@@ -1,0 +1,241 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum OAuthProvider {
+  SPOTIFY
+  GOOGLE
+}
+
+enum MigrationStatus {
+  DRAFT
+  SCANNING
+  READY
+  QUEUED
+  RUNNING
+  PAUSED
+  AUTHENTICATION_REQUIRED
+  QUOTA_PAUSED
+  COMPLETED
+  FAILED
+}
+
+enum MigrationPhase {
+  SCANNING
+  LIKING
+}
+
+enum MigrationTrackStatus {
+  PENDING
+  SCANNING
+  READY
+  REVIEW
+  LIKING
+  LIKED
+  ALREADY_LIKED
+  SKIPPED
+  NOT_FOUND
+  FAILED
+}
+
+enum YouTubeVideoLikeStatus {
+  PENDING
+  LIKED
+}
+
+enum ProviderConnectionStatus {
+  ACTIVE
+  AUTHENTICATION_INVALID
+  RECONNECT_REQUIRED
+}
+
+model User {
+  id                String             @id @default(cuid())
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  spotifyConnection SpotifyConnection?
+  youtubeConnection YouTubeConnection?
+  sessions          AppSession[]
+  oauthStates       OAuthState[]
+  migrations        Migration[]
+  youtubeVideoLikes YouTubeVideoLike[]
+}
+
+model SpotifyConnection {
+  id                    String                   @id @default(cuid())
+  userId                String                   @unique
+  providerAccountId     String                   @unique
+  accountName           String?
+  encryptedAccessToken  String
+  encryptedRefreshToken String?
+  expiresAt             DateTime?
+  scopes                String[]
+  connectionStatus      ProviderConnectionStatus @default(ACTIVE)
+  lastAuthErrorCode     String?
+  authInvalidAt         DateTime?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model YouTubeConnection {
+  id                    String                   @id @default(cuid())
+  userId                String                   @unique
+  providerAccountId     String                   @unique
+  accountName           String?
+  encryptedAccessToken  String
+  encryptedRefreshToken String?
+  expiresAt             DateTime?
+  scopes                String[]
+  connectionStatus      ProviderConnectionStatus @default(ACTIVE)
+  lastAuthErrorCode     String?
+  authInvalidAt         DateTime?
+  refreshVersion        Int                      @default(0)
+  refreshOwner          String?
+  refreshLockedUntil    DateTime?
+  createdAt             DateTime                 @default(now())
+  updatedAt             DateTime                 @updatedAt
+  user                  User                     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([refreshLockedUntil])
+}
+
+model YouTubeVideoLike {
+  id            String                 @id @default(cuid())
+  userId        String
+  videoId       String
+  status        YouTubeVideoLikeStatus @default(PENDING)
+  ownerId       String?
+  lockedUntil   DateTime?
+  leaseVersion  Int                    @default(0)
+  lastErrorCode String?
+  likedAt       DateTime?
+  createdAt     DateTime               @default(now())
+  updatedAt     DateTime               @updatedAt
+  user          User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, videoId])
+  @@index([status, lockedUntil])
+}
+
+model WorkerRuntime {
+  id        String   @id
+  startedAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AppSession {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model OAuthState {
+  id                    String        @id @default(cuid())
+  userId                String?
+  provider              OAuthProvider
+  stateHash             String        @unique
+  encryptedCodeVerifier String
+  returnTo              String        @default("/connections")
+  expiresAt             DateTime
+  createdAt             DateTime      @default(now())
+  user                  User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+}
+
+model Migration {
+  id                 String           @id @default(cuid())
+  userId             String
+  source             String           @default("spotify")
+  destination        String           @default("youtube_music")
+  status             MigrationStatus  @default(DRAFT)
+  phase              MigrationPhase   @default(SCANNING)
+  totalTracks        Int              @default(0)
+  sourceTotalTracks  Int?
+  trackLimit         Int?
+  processedTracks    Int              @default(0)
+  confidentCount     Int              @default(0)
+  likedCount         Int              @default(0)
+  alreadyLikedCount  Int              @default(0)
+  reviewCount        Int              @default(0)
+  notFoundCount      Int              @default(0)
+  failedCount        Int              @default(0)
+  skippedCount       Int              @default(0)
+  currentTrackTitle  String?
+  currentTrackArtist String?
+  lastErrorCode      String?
+  lastErrorMessage   String?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  lockedUntil        DateTime?
+  workerId           String?
+  leaseVersion       Int              @default(0)
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  user               User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tracks             MigrationTrack[]
+
+  @@index([userId, createdAt])
+  @@index([status, lockedUntil, leaseVersion])
+}
+
+model MigrationTrack {
+  id                    String               @id @default(cuid())
+  migrationId           String
+  position              Int
+  spotifyTrackId        String
+  spotifyTitle          String
+  spotifyArtists        String[]
+  spotifyAlbum          String?
+  spotifyDurationMs     Int?
+  spotifyUrl            String?
+  matchedYoutubeVideoId String?
+  matchedYoutubeTitle   String?
+  matchedYoutubeArtists String[]
+  confidence            String?
+  score                 Float?
+  reason                String?
+  status                MigrationTrackStatus @default(PENDING)
+  retryCount            Int                  @default(0)
+  errorCode             String?
+  errorMessage          String?
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  migration             Migration            @relation(fields: [migrationId], references: [id], onDelete: Cascade)
+  candidates            MigrationCandidate[]
+
+  @@unique([migrationId, spotifyTrackId])
+  @@index([migrationId, status, position])
+}
+
+model MigrationCandidate {
+  id         String         @id @default(cuid())
+  trackId    String
+  position   Int
+  videoId    String
+  title      String
+  artists    String[]
+  album      String?
+  durationMs Int?
+  resultType String?
+  videoType  String?
+  score      Float
+  reasons    String[]
+  createdAt  DateTime       @default(now())
+  track      MigrationTrack @relation(fields: [trackId], references: [id], onDelete: Cascade)
+
+  @@unique([trackId, position])
+  @@index([trackId])
+}
