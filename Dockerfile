@@ -4,6 +4,10 @@ FROM node:22-bookworm-slim AS node-build
 
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json ./
 RUN npm ci
 
@@ -21,6 +25,7 @@ ENV NODE_ENV=production \
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
+        openssl \
         python3 \
         python3-pip \
         python3-venv \
@@ -44,6 +49,8 @@ RUN python3 -m venv /app/.venv \
 
 COPY prisma ./prisma
 COPY src ./src
+
+RUN chown -R node:node /app
 
 USER node
 
