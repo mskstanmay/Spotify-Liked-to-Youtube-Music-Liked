@@ -1,0 +1,71 @@
+{
+  "normalization": [
+    ["Beyoncé & JAY-Z feat. Guest (Official Music Video)", "beyonce and jay z guest"],
+    ["Song [Live] {Visualizer}", "song live"]
+  ],
+  "cases": [
+    {
+      "name": "exact_song",
+      "spotify": {"title": "Midnight City", "artists": ["M83"], "album": "Hurry Up, We're Dreaming", "durationMs": 244000},
+      "candidates": [
+        {"videoId": "exact", "title": "Midnight City", "artists": ["M83"], "album": "Hurry Up, We're Dreaming", "durationMs": 244000, "resultType": "song", "videoType": "MUSIC_VIDEO_TYPE_ATV"},
+        {"videoId": "cover", "title": "Midnight City (Cover)", "artists": ["Other Artist"], "album": "", "durationMs": 250000, "resultType": "video", "videoType": "MUSIC_VIDEO_TYPE_UGC"}
+      ],
+      "expected": {
+        "matched": true, "closeSecond": false, "videoId": "exact", "title": "Midnight City", "artists": ["M83"], "score": 1, "confidence": "HIGH", "reason": "",
+        "candidates": [
+          {"videoId": "exact", "score": 1, "scoreBreakdown": {"title": 1, "artist": 1, "duration": 1, "album": 1, "type": 1, "penalty": 0}, "reasons": []},
+          {"videoId": "cover", "score": 0.4534, "scoreBreakdown": {"title": 1, "artist": 0, "duration": 0.85, "album": 0.5, "type": 0.72, "penalty": 0.15}, "reasons": ["artist mismatch", "version mismatch", "non-song result"]}
+        ]
+      }
+    },
+    {
+      "name": "safe_medium_duration",
+      "spotify": {"title": "Signal", "artists": ["The Waves"], "album": "", "durationMs": 180000},
+      "candidates": [{"videoId": "medium", "title": "Signal", "artists": ["The Waves"], "album": "", "durationMs": 230000, "resultType": "video", "videoType": "MUSIC_VIDEO_TYPE_UGC"}],
+      "expected": {
+        "matched": false, "closeSecond": false, "videoId": null, "title": "Signal", "artists": ["The Waves"], "score": 0.7604, "confidence": "MEDIUM", "reason": "Best score 0.7604 is below threshold 0.85.",
+        "candidates": [{"videoId": "medium", "score": 0.7604, "scoreBreakdown": {"title": 1, "artist": 1, "duration": 0, "album": 0.5, "type": 0.72, "penalty": 0}, "reasons": ["duration mismatch", "non-song result"]}]
+      }
+    },
+    {
+      "name": "close_second",
+      "spotify": {"title": "Home", "artists": ["Daughter"], "album": "The Wild Youth", "durationMs": 250000},
+      "candidates": [
+        {"videoId": "one", "title": "Home", "artists": ["Daughter"], "album": "The Wild Youth", "durationMs": 250000, "resultType": "song"},
+        {"videoId": "two", "title": "Home", "artists": ["Daughter"], "album": "The Wild Youth", "durationMs": 254000, "resultType": "song"}
+      ],
+      "expected": {
+        "matched": false, "closeSecond": true, "videoId": null, "title": "Home", "artists": ["Daughter"], "score": 1, "confidence": "MEDIUM", "reason": "Top candidates are too close to choose safely.",
+        "candidates": [
+          {"videoId": "one", "score": 1, "scoreBreakdown": {"title": 1, "artist": 1, "duration": 1, "album": 1, "type": 1, "penalty": 0}, "reasons": []},
+          {"videoId": "two", "score": 0.973, "scoreBreakdown": {"title": 1, "artist": 1, "duration": 0.85, "album": 1, "type": 1, "penalty": 0}, "reasons": []}
+        ]
+      }
+    },
+    {
+      "name": "version_mismatch",
+      "spotify": {"title": "Alive", "artists": ["Artist"], "album": "Record", "durationMs": 200000},
+      "candidates": [{"videoId": "live", "title": "Alive (Live)", "artists": ["Artist"], "album": "Record", "durationMs": 201000, "resultType": "song"}],
+      "expected": {
+        "matched": true, "closeSecond": false, "videoId": "live", "title": "Alive (Live)", "artists": ["Artist"], "score": 1, "confidence": "HIGH", "reason": "",
+        "candidates": [{"videoId": "live", "score": 1, "scoreBreakdown": {"title": 1, "artist": 1, "duration": 1, "album": 1, "type": 1, "penalty": 0}, "reasons": []}]
+      }
+    },
+    {
+      "name": "artist_mismatch",
+      "spotify": {"title": "Fire", "artists": ["First Artist"], "album": "Record", "durationMs": 200000},
+      "candidates": [{"videoId": "wrong", "title": "Fire", "artists": ["Second Artist"], "album": "Record", "durationMs": 200000, "resultType": "song"}],
+      "expected": {
+        "matched": false, "closeSecond": false, "videoId": null, "title": "Fire", "artists": ["Second Artist"], "score": 0.69, "confidence": "LOW", "reason": "Best score 0.69 is below threshold 0.85.",
+        "candidates": [{"videoId": "wrong", "score": 0.69, "scoreBreakdown": {"title": 1, "artist": 0, "duration": 1, "album": 1, "type": 1, "penalty": 0}, "reasons": ["artist mismatch"]}]
+      }
+    },
+    {
+      "name": "no_candidates",
+      "spotify": {"title": "Missing", "artists": ["Nobody"], "album": "", "durationMs": 100000},
+      "candidates": [],
+      "expected": {"matched": false, "closeSecond": false, "videoId": null, "title": null, "artists": null, "score": null, "confidence": "LOW", "reason": "No YouTube Music candidates returned.", "candidates": []}
+    }
+  ]
+}

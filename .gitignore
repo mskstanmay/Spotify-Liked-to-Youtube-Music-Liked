@@ -2,6 +2,9 @@ node_modules/
 web/dist/
 .env
 .venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
 data/
 *.log
 .env
