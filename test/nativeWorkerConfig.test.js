@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { webConfig } = require('../src/api/config');
 const { nativeWorkerConfig, validateNativeWorkerConfig } = require('../src/worker/nativeConfig');
 
 const tokenEncryptionKey = Buffer.alloc(32, 9).toString('base64');
@@ -42,6 +43,26 @@ test('native worker configuration parses limits and preserves safe defaults', ()
   assert.equal(config.ytmusicSearchLimit, 7);
   assert.equal(config.ytmusicSearchTimeoutMs, 12_000);
   assert.equal(config.autoReviewMinScore, 0.75);
+});
+
+test('migration track maximum is unlimited when missing or empty and accepts positive values', () => {
+  const original = process.env.MIGRATION_MAX_TRACKS;
+  try {
+    delete process.env.MIGRATION_MAX_TRACKS;
+    assert.equal(webConfig().migrationMaxTracks, null);
+    assert.equal(nativeWorkerConfig(environment()).migrationMaxTracks, null);
+
+    process.env.MIGRATION_MAX_TRACKS = '';
+    assert.equal(webConfig().migrationMaxTracks, null);
+    assert.equal(nativeWorkerConfig(environment({ MIGRATION_MAX_TRACKS: '' })).migrationMaxTracks, null);
+
+    process.env.MIGRATION_MAX_TRACKS = '100';
+    assert.equal(webConfig().migrationMaxTracks, 100);
+    assert.equal(nativeWorkerConfig(environment({ MIGRATION_MAX_TRACKS: '100' })).migrationMaxTracks, 100);
+  } finally {
+    if (original === undefined) delete process.env.MIGRATION_MAX_TRACKS;
+    else process.env.MIGRATION_MAX_TRACKS = original;
+  }
 });
 
 test('native worker configuration rejects missing required values and malformed keys', () => {

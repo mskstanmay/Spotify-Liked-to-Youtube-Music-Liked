@@ -128,9 +128,10 @@ test('server-side Spotify scan limit fetches only the selected scope and returns
 test('preview scanning never invokes a mutating YouTube provider operation', async () => {
   let migration = {
     id: 'migration', userId: 'user', status: 'SCANNING', phase: 'SCANNING', workerId: 'worker-preview',
-    leaseVersion: 1, lockedUntil: new Date(Date.now() + 60_000), startedAt: null, trackLimit: 1,
+    leaseVersion: 1, lockedUntil: new Date(Date.now() + 60_000), startedAt: null, trackLimit: 3,
   };
   let tracks = [];
+  let observedTrackLimit;
   const apply = (row, data) => {
     for (const [key, value] of Object.entries(data)) row[key] = value?.increment ? (row[key] || 0) + value.increment : value;
   };
@@ -166,7 +167,8 @@ test('preview scanning never invokes a mutating YouTube provider operation', asy
     logger: { info() {}, warn() {}, error() {} },
     config: { workerLeaseMs: 60_000, maxRetries: 0, requestDelayMs: 0 },
     providers: {
-      fetchLikedTracks: async (database, connection, config, onProgress) => {
+      fetchLikedTracks: async (database, connection, config, onProgress, shouldContinue, trackLimit) => {
+        observedTrackLimit = trackLimit;
         await onProgress(1, 1, 100);
         return { sourceTotal: 100, tracks: [{ spotifyTrackId: 'spotify-1', title: 'Song', artists: ['Artist'], album: 'Album', durationMs: 1000, spotifyUrl: '' }] };
       },
@@ -176,6 +178,7 @@ test('preview scanning never invokes a mutating YouTube provider operation', asy
   });
   await worker.scan({ ...migration });
   assert.equal(mutationCalls, 0);
+  assert.equal(observedTrackLimit, 3);
   assert.equal(migration.status, 'READY');
   assert.equal(migration.sourceTotalTracks, 100);
   assert.equal(tracks[0].status, 'READY');
