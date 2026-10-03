@@ -1,0 +1,70 @@
+{
+  "songPages": [
+    [
+      {
+        "id": "song-a",
+        "title": "Fixture Song",
+        "artists": [{ "name": "Fixture Artist" }],
+        "album": { "name": "Fixture Album" },
+        "duration": { "text": "3:01", "seconds": 181 },
+        "item_type": "song",
+        "videoType": "MUSIC_VIDEO_TYPE_ATV",
+        "isExplicit": true,
+        "feedbackTokens": { "add": "sanitized-add-token" }
+      },
+      {
+        "id": "shared",
+        "title": "Shared Song Result",
+        "artists": ["Fixture Artist"],
+        "duration": { "text": "1:02:03", "seconds": 3723 },
+        "item_type": "song"
+      },
+      {
+        "title": "Missing identifier",
+        "artists": [{ "name": "Nobody" }]
+      }
+    ],
+    [
+      {
+        "id": "song-c",
+        "title": "Continuation Song",
+        "artists": [{ "name": "Continuation Artist" }],
+        "item_type": "song"
+      },
+      {
+        "id": "song-over-limit",
+        "title": "Outside Limit",
+        "artists": [{ "name": "Fixture Artist" }],
+        "item_type": "song"
+      }
+    ]
+  ],
+  "videoPages": [
+    [
+      {
+        "id": "shared",
+        "title": "Shared Video Result",
+        "authors": [{ "name": "Video Author" }],
+        "duration": { "text": "3:00", "seconds": 180 },
+        "item_type": "video",
+        "videoType": "MUSIC_VIDEO_TYPE_OMV"
+      },
+      {
+        "id": "video-b",
+        "title": "Fixture Video",
+        "authors": [{ "name": "Video Author" }],
+        "duration": { "text": "bad" },
+        "item_type": "video",
+        "videoType": "MUSIC_VIDEO_TYPE_UGC"
+      }
+    ],
+    [
+      {
+        "id": "video-c",
+        "title": "Continuation Video",
+        "authors": ["String Author"],
+        "item_type": "video"
+      }
+    ]
+  ]
+}

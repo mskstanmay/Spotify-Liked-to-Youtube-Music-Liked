@@ -1,7 +1,6 @@
 const crypto = require('node:crypto');
 const { fetchLikedTracks } = require('../providers/spotify/web');
 const youtube = require('../providers/youtube/web');
-const ytmusic = require('../ytmusic/client');
 const { matchTrack } = require('../matching/trackMatcher');
 const { withRetries, sleep } = require('../utils/retry');
 const { countMigrationTracks, persistedCounterData, refreshCounts } = require('../migration/state');
@@ -78,7 +77,7 @@ class MigrationWorker {
     this.logger = logger;
     this.fetchLikedTracks = providers.fetchLikedTracks || fetchLikedTracks;
     this.youtube = providers.youtube || youtube;
-    this.searchTrack = providers.searchTrack || ytmusic.searchTrack;
+    this.searchTrack = providers.searchTrack || require('../ytmusic/client').searchTrack;
     this.stopped = true;
   }
 

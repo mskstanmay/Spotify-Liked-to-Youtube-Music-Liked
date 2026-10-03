@@ -10,6 +10,9 @@
     "api:dev": "node --watch src/api/server.js",
     "worker": "node src/worker/index.js",
     "worker:dev": "node --watch src/worker/index.js",
+    "worker:native": "node src/worker/nativeIndex.js",
+    "worker:native:dev": "node --watch src/worker/nativeIndex.js",
+    "worker:legacy": "node src/worker/index.js",
     "frontend:dev": "vite --config web/vite.config.js",
     "frontend:build": "vite build --config web/vite.config.js",
     "frontend:preview": "vite preview --config web/vite.config.js",
@@ -60,6 +63,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.9.3",
+    "youtubei.js": "18.1.0",
     "zod": "^4.1.12"
   },
   "devDependencies": {
