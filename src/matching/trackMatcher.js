@@ -1,12 +1,27 @@
-const VERSION_TERMS = {
-  live: ['live', 'concert', 'session'],
-  remix: ['remix', 'edit', 'mix'],
-  cover: ['cover', 'tribute', 'karaoke'],
-  acoustic: ['acoustic', 'unplugged'],
-  sped: ['sped up', 'speed up', 'slowed', 'nightcore', 'lofi'],
-  instrumental: ['instrumental'],
-  remaster: ['remaster', 'remastered'],
+const VERSION_DEFINITIONS = {
+  live: { patterns: ['\\blive\\b', '\\bconcert\\b', '\\bsession\\b'], penalty: 0.15 },
+  acoustic: { patterns: ['\\bacoustic\\b'], penalty: 0.15 },
+  unplugged: { patterns: ['\\bunplugged\\b'], penalty: 0.15 },
+  remix: { patterns: ['\\bremix(?:ed)?\\b'], penalty: 0.18 },
+  rework: { patterns: ['\\brework(?:ed)?\\b'], penalty: 0.18 },
+  radioEdit: { patterns: ['\\bradio\\s+(?:edit|version)\\b'], penalty: 0.15 },
+  extended: { patterns: ['\\bextended(?:\\s+(?:mix|edit|version))?\\b'], penalty: 0.15 },
+  instrumental: { patterns: ['\\binstrumental\\b'], penalty: 0.15 },
+  karaoke: { patterns: ['\\bkaraoke\\b'], penalty: 0.15 },
+  spedUp: { patterns: ['\\b(?:sped|speed)\\s+up\\b', '\\bnightcore\\b'], penalty: 0.15 },
+  slowed: { patterns: ['\\bslowed(?:\\s+down)?\\b'], penalty: 0.15 },
+  remastered: {
+    patterns: [
+      '\\b(?:19|20)\\d{2}\\s+remaster(?:ed)?\\b',
+      '\\bremaster(?:ed)?(?:\\s+(?:19|20)\\d{2})?\\b',
+    ],
+    penalty: 0.04,
+  },
+  cover: { patterns: ['\\bcover\\b'], penalty: 0.15 },
+  tribute: { patterns: ['\\btribute\\b'], penalty: 0.15 },
 };
+
+const VERSION_FLAGS = Object.keys(VERSION_DEFINITIONS);
 
 function normalizeString(value = '') {
   return String(value)
@@ -23,11 +38,70 @@ function normalizeString(value = '') {
     .trim();
 }
 
+function featureCredits(value = '') {
+  let base = String(value);
+  const featured = [];
+  base = base.replace(/[([{]\s*(?:feat(?:uring)?|ft)\.?\s+([^\])}]+)[\])}]/gi, (_match, credit) => {
+    if (credit?.trim()) featured.push(credit.trim());
+    return ' ';
+  });
+  base = base.replace(/\s+(?:feat(?:uring)?|ft)\.?\s+(.+)$/i, (_match, credit) => {
+    if (credit?.trim()) featured.push(credit.trim());
+    return ' ';
+  });
+  return { base, featured };
+}
+
+function canonicalArtistSet(artists = [], title = '') {
+  const values = [];
+  for (const artist of artists || []) {
+    const parsed = featureCredits(artist);
+    values.push(parsed.base, ...parsed.featured);
+  }
+  values.push(...featureCredits(title).featured);
+  return new Set(values.map(normalizeString).filter(Boolean));
+}
+
+function setsEqual(left, right) {
+  if (left.size !== right.size) return false;
+  for (const value of left) {
+    if (!right.has(value)) return false;
+  }
+  return true;
+}
+
+function exactArtistSets(spotifyTrack, candidate) {
+  const spotify = canonicalArtistSet(spotifyTrack.artists, spotifyTrack.title);
+  const ytm = canonicalArtistSet(candidate.artists, candidate.title);
+  return spotify.size > 0 && ytm.size > 0 && setsEqual(spotify, ytm);
+}
+
+function detectVersionSignature(value = '') {
+  const normalized = normalizeString(value);
+  const signature = {};
+  for (const [flag, definition] of Object.entries(VERSION_DEFINITIONS)) {
+    signature[flag] = definition.patterns.some((pattern) => new RegExp(pattern).test(normalized));
+  }
+  const after = normalized.match(/\bremaster(?:ed)?\s+((?:19|20)\d{2})\b/);
+  const before = normalized.match(/\b((?:19|20)\d{2})\s+remaster(?:ed)?\b/);
+  signature.remasterYear = after?.[1] || before?.[1] || null;
+  return signature;
+}
+
+function versionSignaturesDiffer(leftTitle, rightTitle) {
+  const left = detectVersionSignature(leftTitle);
+  const right = detectVersionSignature(rightTitle);
+  if (VERSION_FLAGS.some((flag) => left[flag] !== right[flag])) return true;
+  return Boolean(left.remastered && right.remastered
+    && left.remasterYear && right.remasterYear
+    && left.remasterYear !== right.remasterYear);
+}
+
 function stripVersionNoise(value = '') {
-  let normalized = normalizeString(value);
-  for (const terms of Object.values(VERSION_TERMS)) {
-    for (const term of terms) {
-      normalized = normalized.replace(new RegExp(`\\b${term.replace(/\s+/g, '\\s+')}\\b`, 'g'), ' ');
+  let normalized = normalizeString(featureCredits(value).base);
+  for (const definition of Object.values(VERSION_DEFINITIONS)) {
+    for (const pattern of definition.patterns) {
+      normalized = normalized.replace(new RegExp(pattern, 'g'), ' ');
     }
   }
   return normalized.replace(/\s+/g, ' ').trim();
@@ -56,20 +130,15 @@ function titleSimilarity(a, b) {
   return jaccard(cleanA, cleanB);
 }
 
-function artistSimilarity(spotifyArtists = [], ytmArtists = []) {
-  const spotify = spotifyArtists.map(normalizeString).filter(Boolean);
-  const ytm = ytmArtists.map(normalizeString).filter(Boolean);
-  if (!spotify.length || !ytm.length) return 0;
-
-  let hits = 0;
+function artistSimilarity(spotifyArtists = [], ytmArtists = [], spotifyTitle = '', ytmTitle = '') {
+  const spotify = canonicalArtistSet(spotifyArtists, spotifyTitle);
+  const ytm = canonicalArtistSet(ytmArtists, ytmTitle);
+  if (!spotify.size || !ytm.size) return 0;
+  let intersection = 0;
   for (const artist of spotify) {
-    if (ytm.some((candidate) => candidate === artist || candidate.includes(artist) || artist.includes(candidate))) {
-      hits += 1;
-    }
+    if (ytm.has(artist)) intersection += 1;
   }
-
-  const primaryBonus = ytm.some((candidate) => candidate === spotify[0]) ? 0.1 : 0;
-  return Math.min(1, (hits / spotify.length) + primaryBonus);
+  return (2 * intersection) / (spotify.size + ytm.size);
 }
 
 function albumSimilarity(spotifyAlbum = '', ytmAlbum = '') {
@@ -78,6 +147,11 @@ function albumSimilarity(spotifyAlbum = '', ytmAlbum = '') {
   const b = normalizeString(ytmAlbum);
   if (a === b) return 1;
   return jaccard(a, b);
+}
+
+function exactAlbumMatch(spotifyAlbum = '', ytmAlbum = '') {
+  if (!spotifyAlbum || !ytmAlbum) return false;
+  return normalizeString(spotifyAlbum) === normalizeString(ytmAlbum);
 }
 
 function durationSimilarity(spotifyMs = 0, ytmMs = 0) {
@@ -90,23 +164,25 @@ function durationSimilarity(spotifyMs = 0, ytmMs = 0) {
   return 0;
 }
 
-function detectVersionFlags(value = '') {
-  const normalized = normalizeString(value);
-  const flags = {};
-  for (const [flag, terms] of Object.entries(VERSION_TERMS)) {
-    flags[flag] = terms.some((term) => normalized.includes(normalizeString(term)));
-  }
-  return flags;
+function durationDelta(spotifyMs, ytmMs) {
+  const left = Number(spotifyMs);
+  const right = Number(ytmMs);
+  if (!Number.isFinite(left) || !Number.isFinite(right) || left <= 0 || right <= 0) return null;
+  return Math.abs(left - right);
 }
 
 function versionPenalty(spotifyTitle, ytmTitle) {
-  const spotify = detectVersionFlags(spotifyTitle);
-  const ytm = detectVersionFlags(ytmTitle);
+  const spotify = detectVersionSignature(spotifyTitle);
+  const ytm = detectVersionSignature(ytmTitle);
   let penalty = 0;
-  for (const flag of ['live', 'remix', 'cover', 'acoustic', 'sped', 'instrumental']) {
-    if (spotify[flag] !== ytm[flag]) penalty += flag === 'remix' ? 0.18 : 0.15;
+  for (const flag of VERSION_FLAGS) {
+    if (spotify[flag] !== ytm[flag]) penalty += VERSION_DEFINITIONS[flag].penalty;
   }
-  if (!spotify.remaster && ytm.remaster) penalty += 0.04;
+  if (spotify.remastered && ytm.remastered
+    && spotify.remasterYear && ytm.remasterYear
+    && spotify.remasterYear !== ytm.remasterYear) {
+    penalty += VERSION_DEFINITIONS.remastered.penalty;
+  }
   return Math.min(0.5, penalty);
 }
 
@@ -118,9 +194,51 @@ function resultTypeScore(candidate) {
   return 0.45;
 }
 
+function trustedResultRank(candidate) {
+  const resultType = normalizeString(candidate.resultType || '');
+  const videoType = normalizeString(candidate.videoType || '');
+  if (resultType === 'song' || videoType.includes('music video type atv')) return 2;
+  if (videoType.includes('music video type omv')) return 1;
+  return 0;
+}
+
+function isExactEvidenceCandidate(spotifyTrack, candidate) {
+  const spotifyTitle = stripVersionNoise(spotifyTrack.title);
+  const ytmTitle = stripVersionNoise(candidate.title);
+  const delta = durationDelta(spotifyTrack.durationMs, candidate.durationMs);
+  return Boolean(
+    spotifyTitle
+    && spotifyTitle === ytmTitle
+    && exactArtistSets(spotifyTrack, candidate)
+    && delta !== null
+    && delta <= 3000
+    && !versionSignaturesDiffer(spotifyTrack.title, candidate.title)
+    && trustedResultRank(candidate) > 0
+  );
+}
+
+function sameIdentity(left, right) {
+  const leftTitle = stripVersionNoise(left.title);
+  const rightTitle = stripVersionNoise(right.title);
+  const delta = durationDelta(left.durationMs, right.durationMs);
+  return Boolean(
+    leftTitle
+    && leftTitle === rightTitle
+    && exactArtistSets(left, right)
+    && !versionSignaturesDiffer(left.title, right.title)
+    && delta !== null
+    && delta <= 3000
+  );
+}
+
 function scoreCandidate(spotifyTrack, candidate) {
   const title = titleSimilarity(spotifyTrack.title, candidate.title);
-  const artist = artistSimilarity(spotifyTrack.artists, candidate.artists);
+  const artist = artistSimilarity(
+    spotifyTrack.artists,
+    candidate.artists,
+    spotifyTrack.title,
+    candidate.title,
+  );
   const duration = durationSimilarity(spotifyTrack.durationMs, candidate.durationMs);
   const album = albumSimilarity(spotifyTrack.album, candidate.album);
   const type = resultTypeScore(candidate);
@@ -149,27 +267,57 @@ function confidenceFor(score, reasons) {
   return 'LOW';
 }
 
+function exactTierComparator(spotifyTrack) {
+  return (left, right) => {
+    if (left.exact !== right.exact) return left.exact ? -1 : 1;
+    if (!left.exact) return (right.scored.score - left.scored.score) || (left.index - right.index);
+    const typeDifference = trustedResultRank(right.scored) - trustedResultRank(left.scored);
+    if (typeDifference) return typeDifference;
+    const durationDifference = durationDelta(spotifyTrack.durationMs, left.scored.durationMs)
+      - durationDelta(spotifyTrack.durationMs, right.scored.durationMs);
+    if (durationDifference) return durationDifference;
+    const leftAlbum = exactAlbumMatch(spotifyTrack.album, left.scored.album);
+    const rightAlbum = exactAlbumMatch(spotifyTrack.album, right.scored.album);
+    if (leftAlbum !== rightAlbum) return leftAlbum ? -1 : 1;
+    return left.index - right.index;
+  };
+}
+
 function matchTrack(spotifyTrack, candidates, options = {}) {
   const threshold = options.threshold ?? 0.85;
-  const scored = (candidates || [])
+  const ranked = (candidates || [])
     .filter((candidate) => candidate?.videoId)
-    .map((candidate) => scoreCandidate(spotifyTrack, candidate))
-    .sort((a, b) => b.score - a.score);
+    .map((candidate, index) => ({
+      scored: scoreCandidate(spotifyTrack, candidate),
+      exact: isExactEvidenceCandidate(spotifyTrack, candidate),
+      index,
+    }))
+    .sort(exactTierComparator(spotifyTrack));
+  const scored = ranked.map((candidate) => candidate.scored);
 
-  const best = scored[0];
-  if (!best) {
+  const bestEntry = ranked[0];
+  if (!bestEntry) {
     return {
       matched: false,
       closeSecond: false,
       confidence: 'LOW',
+      matchTier: 'WEIGHTED',
       reason: 'No YouTube Music candidates returned.',
       candidates: [],
     };
   }
 
-  const second = scored[1];
-  const closeSecond = Boolean(second && best.score - second.score < 0.04);
-  const confidence = closeSecond ? 'MEDIUM' : confidenceFor(best.score, best.reasons);
+  const best = bestEntry.scored;
+  let competitor;
+  if (bestEntry.exact) {
+    competitor = ranked
+      .filter((entry) => !sameIdentity(best, entry.scored))
+      .reduce((highest, entry) => (!highest || entry.scored.score > highest.score ? entry.scored : highest), null);
+  } else {
+    competitor = ranked[1]?.scored;
+  }
+  const closeSecond = Boolean(competitor && best.score - competitor.score < 0.04);
+  const confidence = closeSecond ? 'MEDIUM' : (bestEntry.exact ? 'HIGH' : confidenceFor(best.score, best.reasons));
   const matched = best.score >= threshold && confidence === 'HIGH' && !closeSecond;
 
   return {
@@ -180,6 +328,7 @@ function matchTrack(spotifyTrack, candidates, options = {}) {
     artists: best.artists || [],
     score: best.score,
     confidence,
+    matchTier: bestEntry.exact ? 'EXACT' : 'WEIGHTED',
     selectedCandidate: best,
     candidates: scored,
     reason: matched ? '' : uncertaintyReason(best, closeSecond, threshold),

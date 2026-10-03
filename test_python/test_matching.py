@@ -19,6 +19,7 @@ def _projection(result: dict) -> dict:
         "artists": result.get("artists"),
         "score": result.get("score"),
         "confidence": result["confidence"],
+        "matchTier": result["matchTier"],
         "reason": result["reason"],
         "candidates": [
             {
@@ -78,3 +79,20 @@ def test_safe_medium_and_ambiguous_results_preserve_node_semantics():
     )
     assert scan_result_data(close)["status"] == "REVIEW"
     assert scan_result_data(close)["needsReview"] is False
+
+    exact = match_track(
+        cases["take_my_mind_exact_identity"]["spotify"],
+        cases["take_my_mind_exact_identity"]["candidates"],
+    )
+    assert exact["videoId"] == "ukxikZCIRBU"
+    assert exact["matchTier"] == "EXACT"
+    assert scan_result_data(exact) == {
+        "status": "READY",
+        "needsReview": False,
+        "matchedYoutubeVideoId": "ukxikZCIRBU",
+        "matchedYoutubeTitle": "Take My Mind",
+        "matchedYoutubeArtists": ["WizTheMc", "bees & honey"],
+        "confidence": "HIGH",
+        "score": 0.92,
+        "reason": None,
+    }

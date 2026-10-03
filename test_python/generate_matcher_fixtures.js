@@ -22,8 +22,8 @@ const cases = [
     name: 'close_second',
     spotify: { title: 'Home', artists: ['Daughter'], album: 'The Wild Youth', durationMs: 250000 },
     candidates: [
-      { videoId: 'one', title: 'Home', artists: ['Daughter'], album: 'The Wild Youth', durationMs: 250000, resultType: 'song' },
-      { videoId: 'two', title: 'Home', artists: ['Daughter'], album: 'The Wild Youth', durationMs: 254000, resultType: 'song' },
+      { videoId: 'one', title: 'Home', artists: ['Daughter'], album: 'The Wild Youth', durationMs: 245000, resultType: 'song' },
+      { videoId: 'two', title: 'Home', artists: ['Daughter'], album: 'The Wild Youth', durationMs: 255000, resultType: 'song' },
     ],
   },
   {
@@ -45,6 +45,39 @@ const cases = [
     spotify: { title: 'Missing', artists: ['Nobody'], album: '', durationMs: 100000 },
     candidates: [],
   },
+  {
+    name: 'take_my_mind_exact_identity',
+    spotify: { title: 'Take My Mind', artists: ['WizTheMc', 'bees & honey'], album: 'YEBO', durationMs: 171199 },
+    candidates: [
+      { videoId: 'UAepuqX-StE', title: 'Take My Mind', artists: ['WizTheMc', 'bees & honey'], album: null, durationMs: 172000, resultType: 'video', videoType: 'MUSIC_VIDEO_TYPE_OMV' },
+      { videoId: 'ukxikZCIRBU', title: 'Take My Mind', artists: ['WizTheMc', 'bees & honey'], album: 'Take My Mind', durationMs: 172000, resultType: 'song', videoType: 'MUSIC_VIDEO_TYPE_ATV' },
+    ],
+  },
+  {
+    name: 'exact_duration_boundary',
+    spotify: { title: 'Boundary', artists: ['Artist'], album: 'Source', durationMs: 171000 },
+    candidates: [{ videoId: 'boundary', title: 'Boundary', artists: ['Artist'], album: 'Other', durationMs: 174000, resultType: 'song' }],
+  },
+  {
+    name: 'weighted_after_duration_boundary',
+    spotify: { title: 'Boundary', artists: ['Artist'], album: 'Source', durationMs: 171000 },
+    candidates: [{ videoId: 'boundary', title: 'Boundary', artists: ['Artist'], album: 'Other', durationMs: 174001, resultType: 'song' }],
+  },
+  {
+    name: 'featured_artist_formatting',
+    spotify: { title: 'Signal feat. Guest', artists: ['The Waves', 'Guest'], album: 'Source', durationMs: 180000 },
+    candidates: [{ videoId: 'feature', title: 'Signal', artists: ['Guest', 'The Waves'], album: 'Other', durationMs: 181000, resultType: 'song' }],
+  },
+  {
+    name: 'same_remaster',
+    spotify: { title: 'Song (2011 Remastered)', artists: ['Artist'], album: 'Source', durationMs: 180000 },
+    candidates: [{ videoId: 'remaster', title: 'Song (2011 Remastered)', artists: ['Artist'], album: 'Other', durationMs: 181000, resultType: 'song' }],
+  },
+  {
+    name: 'generic_ugc_weighted',
+    spotify: { title: 'Song', artists: ['Artist'], album: 'Source', durationMs: 180000 },
+    candidates: [{ videoId: 'ugc', title: 'Song', artists: ['Artist'], album: 'Source', durationMs: 181000, resultType: 'video', videoType: 'MUSIC_VIDEO_TYPE_UGC' }],
+  },
 ];
 
 function projected(result) {
@@ -56,6 +89,7 @@ function projected(result) {
     artists: result.artists ?? null,
     score: result.score ?? null,
     confidence: result.confidence,
+    matchTier: result.matchTier,
     reason: result.reason,
     candidates: result.candidates.map((candidate) => ({
       videoId: candidate.videoId,

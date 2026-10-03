@@ -1,6 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { matchTrack, normalizeString } = require('../src/matching/trackMatcher');
+const { scanResultData } = require('../src/worker/migrationWorker');
 
 function spotify(overrides = {}) {
   return {
@@ -89,11 +90,15 @@ test('low-confidence match is left for review', () => {
   assert.equal(result.confidence, 'LOW');
 });
 
-test('close candidates remain unmatched and expose explicit ambiguity metadata', () => {
-  const result = matchTrack(spotify(), [candidate({ videoId: 'first' }), candidate({ videoId: 'second', durationMs: 202000 })]);
+test('genuinely close weighted candidates remain unmatched and expose explicit ambiguity metadata', () => {
+  const result = matchTrack(spotify(), [
+    candidate({ videoId: 'first', durationMs: 195000 }),
+    candidate({ videoId: 'second', durationMs: 205000 }),
+  ]);
   assert.equal(result.matched, false);
   assert.equal(result.closeSecond, true);
   assert.equal(result.confidence, 'MEDIUM');
+  assert.equal(result.matchTier, 'WEIGHTED');
 });
 
 test('medium confidence does not change shared matcher or CLI acceptance semantics', () => {
@@ -104,4 +109,183 @@ test('medium confidence does not change shared matcher or CLI acceptance semanti
   assert.equal(result.confidence, 'MEDIUM');
   assert.equal(result.matched, false);
   assert.equal(result.closeSecond, false);
+});
+
+test('real Take My Mind candidates select the ATV song without a false close second', () => {
+  const source = spotify({
+    title: 'Take My Mind',
+    artists: ['WizTheMc', 'bees & honey'],
+    album: 'YEBO',
+    durationMs: 171199,
+  });
+  const result = matchTrack(source, [
+    candidate({
+      videoId: 'UAepuqX-StE',
+      title: 'Take My Mind',
+      artists: ['WizTheMc', 'bees & honey'],
+      album: null,
+      durationMs: 172000,
+      resultType: 'video',
+      videoType: 'MUSIC_VIDEO_TYPE_OMV',
+    }),
+    candidate({
+      videoId: 'ukxikZCIRBU',
+      title: 'Take My Mind',
+      artists: ['WizTheMc', 'bees & honey'],
+      album: 'Take My Mind',
+      durationMs: 172000,
+      resultType: 'song',
+      videoType: 'MUSIC_VIDEO_TYPE_ATV',
+    }),
+  ]);
+
+  assert.equal(result.matched, true);
+  assert.equal(result.videoId, 'ukxikZCIRBU');
+  assert.equal(result.score, 0.92);
+  assert.equal(result.confidence, 'HIGH');
+  assert.equal(result.matchTier, 'EXACT');
+  assert.equal(result.closeSecond, false);
+  assert.deepEqual(scanResultData(result), {
+    status: 'READY', needsReview: false,
+    matchedYoutubeVideoId: 'ukxikZCIRBU', matchedYoutubeTitle: 'Take My Mind',
+    matchedYoutubeArtists: ['WizTheMc', 'bees & honey'], confidence: 'HIGH', score: 0.92, reason: null,
+  });
+});
+
+test('one-second and inclusive three-second duration differences qualify for exact evidence', () => {
+  for (const durationMs of [172000, 174000]) {
+    const result = matchTrack(
+      spotify({ title: 'Boundary', artists: ['Artist'], durationMs: 171000 }),
+      [candidate({ title: 'Boundary', artists: ['Artist'], durationMs })],
+    );
+    assert.equal(result.matched, true);
+    assert.equal(result.matchTier, 'EXACT');
+    assert.equal(result.selectedCandidate.scoreBreakdown.duration, 1);
+  }
+});
+
+test('a 3001 ms duration difference uses weighted fallback', () => {
+  const result = matchTrack(
+    spotify({ title: 'Boundary', artists: ['Artist'], durationMs: 171000 }),
+    [candidate({ title: 'Boundary', artists: ['Artist'], durationMs: 174001 })],
+  );
+  assert.equal(result.matchTier, 'WEIGHTED');
+  assert.equal(result.selectedCandidate.scoreBreakdown.duration, 0.85);
+});
+
+test('exact title with a different artist never enters the exact tier', () => {
+  const result = matchTrack(spotify(), [candidate({ artists: ['Someone Else'] })]);
+  assert.equal(result.matched, false);
+  assert.equal(result.matchTier, 'WEIGHTED');
+  assert.ok(result.selectedCandidate.reasons.includes('artist mismatch'));
+});
+
+test('material version differences remain in review', () => {
+  for (const version of [
+    'Live', 'Remix', 'Rework', 'Radio Edit', 'Extended', 'Acoustic', 'Unplugged',
+    'Instrumental', 'Karaoke', 'Cover', 'Tribute', 'Sped Up', 'Slowed', '2020 Remastered',
+  ]) {
+    const result = matchTrack(spotify(), [candidate({ title: `Blinding Lights (${version})` })]);
+    assert.equal(result.matched, false, version);
+    assert.equal(result.matchTier, 'WEIGHTED', version);
+    assert.ok(result.selectedCandidate.reasons.includes('version mismatch'), version);
+    assert.equal(scanResultData(result).status, 'REVIEW', version);
+  }
+});
+
+test('remaster mismatch is symmetric and different remaster years conflict', () => {
+  const originalToRemaster = matchTrack(spotify(), [candidate({ title: 'Blinding Lights (2011 Remastered)' })]);
+  const remasterToOriginal = matchTrack(
+    spotify({ title: 'Blinding Lights (2011 Remastered)' }),
+    [candidate({ title: 'Blinding Lights' })],
+  );
+  const differentYears = matchTrack(
+    spotify({ title: 'Blinding Lights (2011 Remastered)' }),
+    [candidate({ title: 'Blinding Lights (2020 Remastered)' })],
+  );
+  for (const result of [originalToRemaster, remasterToOriginal, differentYears]) {
+    assert.equal(result.matched, false);
+    assert.ok(result.selectedCandidate.reasons.includes('version mismatch'));
+  }
+});
+
+test('the same remaster signature can qualify for exact evidence', () => {
+  const result = matchTrack(
+    spotify({ title: 'Blinding Lights (2011 Remastered)' }),
+    [candidate({ title: 'Blinding Lights (2011 Remastered)' })],
+  );
+  assert.equal(result.matched, true);
+  assert.equal(result.matchTier, 'EXACT');
+});
+
+test('version words use boundaries rather than substrings', () => {
+  const alive = matchTrack(
+    spotify({ title: 'Alive', artists: ['Artist'] }),
+    [candidate({ title: 'Alive (Live)', artists: ['Artist'] })],
+  );
+  assert.equal(alive.matched, false);
+  assert.ok(alive.selectedCandidate.reasons.includes('version mismatch'));
+
+  for (const title of ['Discover', 'Credit']) {
+    const unchanged = matchTrack(
+      spotify({ title, artists: ['Artist'] }),
+      [candidate({ title, artists: ['Artist'] })],
+    );
+    assert.equal(unchanged.matched, true, title);
+    assert.equal(unchanged.matchTier, 'EXACT', title);
+    assert.ok(!unchanged.selectedCandidate.reasons.includes('version mismatch'), title);
+  }
+});
+
+test('artist sets are order-independent and normalize ampersands', () => {
+  const result = matchTrack(
+    spotify({ title: 'Collaboration', artists: ['First Artist', 'bees & honey'] }),
+    [candidate({ title: 'Collaboration', artists: ['bees and honey', 'First Artist', 'First Artist'] })],
+  );
+  assert.equal(result.matched, true);
+  assert.equal(result.matchTier, 'EXACT');
+  assert.equal(result.selectedCandidate.scoreBreakdown.artist, 1);
+});
+
+test('featured artists in titles reconcile with artist arrays', () => {
+  for (const marker of ['feat.', 'ft.', 'featuring']) {
+    const result = matchTrack(
+      spotify({ title: `Signal ${marker} Guest`, artists: ['The Waves', 'Guest'] }),
+      [candidate({ title: 'Signal', artists: ['Guest', 'The Waves'] })],
+    );
+    assert.equal(result.matched, true, marker);
+    assert.equal(result.matchTier, 'EXACT', marker);
+    assert.equal(result.selectedCandidate.scoreBreakdown.title, 1, marker);
+    assert.equal(result.selectedCandidate.scoreBreakdown.artist, 1, marker);
+  }
+
+  const combinedCredit = matchTrack(
+    spotify({ title: 'Signal', artists: ['The Waves feat. Guest'] }),
+    [candidate({ title: 'Signal', artists: ['The Waves', 'Guest'] })],
+  );
+  assert.equal(combinedCredit.matchTier, 'EXACT');
+});
+
+test('a missing featured artist is not an exact artist-set match', () => {
+  const result = matchTrack(
+    spotify({ title: 'Signal feat. Guest', artists: ['The Waves', 'Guest'] }),
+    [candidate({ title: 'Signal', artists: ['The Waves'] })],
+  );
+  assert.equal(result.matched, false);
+  assert.equal(result.matchTier, 'WEIGHTED');
+  assert.ok(result.selectedCandidate.reasons.includes('artist mismatch'));
+});
+
+test('album mismatch alone does not downgrade exact evidence', () => {
+  const result = matchTrack(spotify(), [candidate({ album: 'Completely Different Album' })]);
+  assert.equal(result.matched, true);
+  assert.equal(result.confidence, 'HIGH');
+  assert.equal(result.matchTier, 'EXACT');
+});
+
+test('missing duration and generic UGC results cannot enter the exact tier', () => {
+  const missingDuration = matchTrack(spotify(), [candidate({ durationMs: null })]);
+  const ugc = matchTrack(spotify(), [candidate({ resultType: 'video', videoType: 'MUSIC_VIDEO_TYPE_UGC' })]);
+  assert.equal(missingDuration.matchTier, 'WEIGHTED');
+  assert.equal(ugc.matchTier, 'WEIGHTED');
 });

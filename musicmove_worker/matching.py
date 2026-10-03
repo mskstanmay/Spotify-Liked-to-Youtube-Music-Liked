@@ -4,16 +4,39 @@ import math
 import re
 import unicodedata
 
-VERSION_TERMS = {
-    "live": ["live", "concert", "session"],
-    "remix": ["remix", "edit", "mix"],
-    "cover": ["cover", "tribute", "karaoke"],
-    "acoustic": ["acoustic", "unplugged"],
-    "sped": ["sped up", "speed up", "slowed", "nightcore", "lofi"],
-    "instrumental": ["instrumental"],
-    "remaster": ["remaster", "remastered"],
+VERSION_DEFINITIONS = {
+    "live": {"patterns": [r"\blive\b", r"\bconcert\b", r"\bsession\b"], "penalty": 0.15},
+    "acoustic": {"patterns": [r"\bacoustic\b"], "penalty": 0.15},
+    "unplugged": {"patterns": [r"\bunplugged\b"], "penalty": 0.15},
+    "remix": {"patterns": [r"\bremix(?:ed)?\b"], "penalty": 0.18},
+    "rework": {"patterns": [r"\brework(?:ed)?\b"], "penalty": 0.18},
+    "radioEdit": {
+        "patterns": [r"\bradio\s+(?:edit|version)\b"],
+        "penalty": 0.15,
+    },
+    "extended": {
+        "patterns": [r"\bextended(?:\s+(?:mix|edit|version))?\b"],
+        "penalty": 0.15,
+    },
+    "instrumental": {"patterns": [r"\binstrumental\b"], "penalty": 0.15},
+    "karaoke": {"patterns": [r"\bkaraoke\b"], "penalty": 0.15},
+    "spedUp": {
+        "patterns": [r"\b(?:sped|speed)\s+up\b", r"\bnightcore\b"],
+        "penalty": 0.15,
+    },
+    "slowed": {"patterns": [r"\bslowed(?:\s+down)?\b"], "penalty": 0.15},
+    "remastered": {
+        "patterns": [
+            r"\b(?:19|20)\d{2}\s+remaster(?:ed)?\b",
+            r"\bremaster(?:ed)?(?:\s+(?:19|20)\d{2})?\b",
+        ],
+        "penalty": 0.04,
+    },
+    "cover": {"patterns": [r"\bcover\b"], "penalty": 0.15},
+    "tribute": {"patterns": [r"\btribute\b"], "penalty": 0.15},
 }
 
+VERSION_FLAGS = tuple(VERSION_DEFINITIONS)
 _UNSET = object()
 
 
@@ -39,19 +62,84 @@ def normalize_string(value: object = _UNSET) -> str:
         normalized,
         flags=re.ASCII,
     )
-    normalized = re.sub(
-        r"\b(audio|lyrics?|visualizer)\b", " ", normalized, flags=re.ASCII
-    )
+    normalized = re.sub(r"\b(audio|lyrics?|visualizer)\b", " ", normalized, flags=re.ASCII)
     normalized = re.sub(r"[()[\]{}]", " ", normalized)
     normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def strip_version_noise(value: object = _UNSET) -> str:
+def feature_credits(value: object = _UNSET) -> tuple[str, list[str]]:
+    text = "" if value is _UNSET else _javascript_string(value)
+    featured: list[str] = []
+
+    def capture(match: re.Match) -> str:
+        credit = match.group(1).strip()
+        if credit:
+            featured.append(credit)
+        return " "
+
+    base = re.sub(
+        r"[([{]\s*(?:feat(?:uring)?|ft)\.?\s+([^\])}]+)[\])}]",
+        capture,
+        text,
+        flags=re.IGNORECASE,
+    )
+    base = re.sub(
+        r"\s+(?:feat(?:uring)?|ft)\.?\s+(.+)$",
+        capture,
+        base,
+        flags=re.IGNORECASE,
+    )
+    return base, featured
+
+
+def canonical_artist_set(artists: list | None, title: object = "") -> set[str]:
+    values: list[str] = []
+    for artist in artists or []:
+        base, featured = feature_credits(artist)
+        values.extend([base, *featured])
+    _, title_featured = feature_credits(title)
+    values.extend(title_featured)
+    return {normalized for value in values if (normalized := normalize_string(value))}
+
+
+def exact_artist_sets(spotify_track: dict, candidate: dict) -> bool:
+    spotify = canonical_artist_set(spotify_track.get("artists"), spotify_track.get("title", ""))
+    ytm = canonical_artist_set(candidate.get("artists"), candidate.get("title", ""))
+    return bool(spotify and ytm and spotify == ytm)
+
+
+def detect_version_signature(value: object = _UNSET) -> dict[str, bool | str | None]:
     normalized = normalize_string(value)
-    for terms in VERSION_TERMS.values():
-        for term in terms:
-            pattern = r"\b" + re.escape(term).replace(r"\ ", r"\s+") + r"\b"
+    signature: dict[str, bool | str | None] = {
+        flag: any(re.search(pattern, normalized, flags=re.ASCII) for pattern in definition["patterns"])
+        for flag, definition in VERSION_DEFINITIONS.items()
+    }
+    after = re.search(r"\bremaster(?:ed)?\s+((?:19|20)\d{2})\b", normalized, flags=re.ASCII)
+    before = re.search(r"\b((?:19|20)\d{2})\s+remaster(?:ed)?\b", normalized, flags=re.ASCII)
+    signature["remasterYear"] = after.group(1) if after else before.group(1) if before else None
+    return signature
+
+
+def version_signatures_differ(left_title: object, right_title: object) -> bool:
+    left = detect_version_signature(left_title)
+    right = detect_version_signature(right_title)
+    if any(left[flag] != right[flag] for flag in VERSION_FLAGS):
+        return True
+    return bool(
+        left["remastered"]
+        and right["remastered"]
+        and left["remasterYear"]
+        and right["remasterYear"]
+        and left["remasterYear"] != right["remasterYear"]
+    )
+
+
+def strip_version_noise(value: object = _UNSET) -> str:
+    base, _ = feature_credits(value)
+    normalized = normalize_string(base)
+    for definition in VERSION_DEFINITIONS.values():
+        for pattern in definition["patterns"]:
             normalized = re.sub(pattern, " ", normalized, flags=re.ASCII)
     return re.sub(r"\s+", " ", normalized).strip()
 
@@ -71,35 +159,22 @@ def title_similarity(left: object, right: object) -> float:
     clean_left, clean_right = strip_version_noise(left), strip_version_noise(right)
     if clean_left and clean_left == clean_right:
         return 1.0
-    if (
-        clean_left
-        and clean_right
-        and (clean_left in clean_right or clean_right in clean_left)
-    ):
+    if clean_left and clean_right and (clean_left in clean_right or clean_right in clean_left):
         return 0.9
     return jaccard(clean_left, clean_right)
 
 
-def artist_similarity(spotify_artists: list | None, ytm_artists: list | None) -> float:
-    spotify = [
-        normalize_string(item)
-        for item in (spotify_artists or [])
-        if normalize_string(item)
-    ]
-    ytm = [
-        normalize_string(item) for item in (ytm_artists or []) if normalize_string(item)
-    ]
+def artist_similarity(
+    spotify_artists: list | None,
+    ytm_artists: list | None,
+    spotify_title: object = "",
+    ytm_title: object = "",
+) -> float:
+    spotify = canonical_artist_set(spotify_artists, spotify_title)
+    ytm = canonical_artist_set(ytm_artists, ytm_title)
     if not spotify or not ytm:
         return 0.0
-    hits = sum(
-        any(
-            candidate == artist or artist in candidate or candidate in artist
-            for candidate in ytm
-        )
-        for artist in spotify
-    )
-    primary_bonus = 0.1 if spotify[0] in ytm else 0.0
-    return min(1.0, hits / len(spotify) + primary_bonus)
+    return 2 * len(spotify & ytm) / (len(spotify) + len(ytm))
 
 
 def album_similarity(spotify_album: object = "", ytm_album: object = "") -> float:
@@ -107,6 +182,14 @@ def album_similarity(spotify_album: object = "", ytm_album: object = "") -> floa
         return 0.5
     left, right = normalize_string(spotify_album), normalize_string(ytm_album)
     return 1.0 if left == right else jaccard(left, right)
+
+
+def exact_album_match(spotify_album: object = "", ytm_album: object = "") -> bool:
+    return bool(
+        spotify_album
+        and ytm_album
+        and normalize_string(spotify_album) == normalize_string(ytm_album)
+    )
 
 
 def duration_similarity(spotify_ms: int | None = 0, ytm_ms: int | None = 0) -> float:
@@ -124,22 +207,32 @@ def duration_similarity(spotify_ms: int | None = 0, ytm_ms: int | None = 0) -> f
     return 0.0
 
 
-def detect_version_flags(value: object = _UNSET) -> dict[str, bool]:
-    normalized = normalize_string(value)
-    return {
-        flag: any(normalize_string(term) in normalized for term in terms)
-        for flag, terms in VERSION_TERMS.items()
-    }
+def duration_delta(spotify_ms: object, ytm_ms: object) -> float | None:
+    try:
+        left, right = float(spotify_ms), float(ytm_ms)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(left) or not math.isfinite(right) or left <= 0 or right <= 0:
+        return None
+    return abs(left - right)
 
 
 def version_penalty(spotify_title: object, ytm_title: object) -> float:
-    spotify, ytm = detect_version_flags(spotify_title), detect_version_flags(ytm_title)
-    penalty = 0.0
-    for flag in ("live", "remix", "cover", "acoustic", "sped", "instrumental"):
-        if spotify[flag] != ytm[flag]:
-            penalty += 0.18 if flag == "remix" else 0.15
-    if not spotify["remaster"] and ytm["remaster"]:
-        penalty += 0.04
+    spotify = detect_version_signature(spotify_title)
+    ytm = detect_version_signature(ytm_title)
+    penalty = sum(
+        float(VERSION_DEFINITIONS[flag]["penalty"])
+        for flag in VERSION_FLAGS
+        if spotify[flag] != ytm[flag]
+    )
+    if (
+        spotify["remastered"]
+        and ytm["remastered"]
+        and spotify["remasterYear"]
+        and ytm["remasterYear"]
+        and spotify["remasterYear"] != ytm["remasterYear"]
+    ):
+        penalty += float(VERSION_DEFINITIONS["remastered"]["penalty"])
     return min(0.5, penalty)
 
 
@@ -153,21 +246,61 @@ def result_type_score(candidate: dict) -> float:
     return 0.45
 
 
+def trusted_result_rank(candidate: dict) -> int:
+    result_type = normalize_string(candidate.get("resultType", ""))
+    video_type = normalize_string(candidate.get("videoType", ""))
+    if result_type == "song" or "music video type atv" in video_type:
+        return 2
+    if "music video type omv" in video_type:
+        return 1
+    return 0
+
+
+def is_exact_evidence_candidate(spotify_track: dict, candidate: dict) -> bool:
+    spotify_title = strip_version_noise(spotify_track.get("title", ""))
+    ytm_title = strip_version_noise(candidate.get("title", ""))
+    delta = duration_delta(spotify_track.get("durationMs"), candidate.get("durationMs"))
+    return bool(
+        spotify_title
+        and spotify_title == ytm_title
+        and exact_artist_sets(spotify_track, candidate)
+        and delta is not None
+        and delta <= 3_000
+        and not version_signatures_differ(spotify_track.get("title", ""), candidate.get("title", ""))
+        and trusted_result_rank(candidate) > 0
+    )
+
+
+def same_identity(left: dict, right: dict) -> bool:
+    left_title = strip_version_noise(left.get("title", ""))
+    right_title = strip_version_noise(right.get("title", ""))
+    delta = duration_delta(left.get("durationMs"), right.get("durationMs"))
+    return bool(
+        left_title
+        and left_title == right_title
+        and exact_artist_sets(left, right)
+        and not version_signatures_differ(left.get("title", ""), right.get("title", ""))
+        and delta is not None
+        and delta <= 3_000
+    )
+
+
 def _js_four_decimals(value: float) -> float:
     return math.floor(value * 10_000 + 0.5) / 10_000
 
 
 def score_candidate(spotify_track: dict, candidate: dict) -> dict:
     title = title_similarity(spotify_track.get("title", ""), candidate.get("title", ""))
-    artist = artist_similarity(spotify_track.get("artists"), candidate.get("artists"))
-    duration = duration_similarity(
-        spotify_track.get("durationMs"), candidate.get("durationMs")
+    artist = artist_similarity(
+        spotify_track.get("artists"),
+        candidate.get("artists"),
+        spotify_track.get("title", ""),
+        candidate.get("title", ""),
     )
+    duration = duration_similarity(spotify_track.get("durationMs"), candidate.get("durationMs"))
     album = album_similarity(spotify_track.get("album"), candidate.get("album"))
     result_type = result_type_score(candidate)
-    penalty = version_penalty(
-        spotify_track.get("title", ""), candidate.get("title", "")
-    )
+    penalty = version_penalty(spotify_track.get("title", ""), candidate.get("title", ""))
     raw_score = (
         title * 0.36
         + artist * 0.31
@@ -205,11 +338,7 @@ def score_candidate(spotify_track: dict, candidate: dict) -> dict:
 def confidence_for(score: float, reasons: list[str]) -> str:
     if score >= 0.9 and not reasons:
         return "HIGH"
-    if (
-        score >= 0.85
-        and "artist mismatch" not in reasons
-        and "version mismatch" not in reasons
-    ):
+    if score >= 0.85 and "artist mismatch" not in reasons and "version mismatch" not in reasons:
         return "HIGH"
     if score >= 0.72 and "artist mismatch" not in reasons:
         return "MEDIUM"
@@ -231,24 +360,54 @@ def uncertainty_reason(best: dict, close_second: bool, threshold: float) -> str:
 def match_track(
     spotify_track: dict, candidates: list[dict] | None, *, threshold: float = 0.85
 ) -> dict:
-    scored = [
-        score_candidate(spotify_track, candidate)
-        for candidate in (candidates or [])
-        if candidate and candidate.get("videoId")
-    ]
-    scored.sort(key=lambda candidate: candidate["score"], reverse=True)
-    if not scored:
+    ranked = []
+    for index, candidate in enumerate(candidates or []):
+        if candidate and candidate.get("videoId"):
+            ranked.append(
+                {
+                    "scored": score_candidate(spotify_track, candidate),
+                    "exact": is_exact_evidence_candidate(spotify_track, candidate),
+                    "index": index,
+                }
+            )
+
+    def rank_key(entry: dict) -> tuple:
+        if not entry["exact"]:
+            return (1, -entry["scored"]["score"], 0, 0, entry["index"])
+        return (
+            0,
+            -trusted_result_rank(entry["scored"]),
+            duration_delta(spotify_track.get("durationMs"), entry["scored"].get("durationMs")),
+            -int(exact_album_match(spotify_track.get("album"), entry["scored"].get("album"))),
+            entry["index"],
+        )
+
+    ranked.sort(key=rank_key)
+    scored = [entry["scored"] for entry in ranked]
+    if not ranked:
         return {
             "matched": False,
             "closeSecond": False,
             "confidence": "LOW",
+            "matchTier": "WEIGHTED",
             "reason": "No YouTube Music candidates returned.",
             "candidates": [],
         }
-    best = scored[0]
-    close_second = len(scored) > 1 and best["score"] - scored[1]["score"] < 0.04
+
+    best_entry = ranked[0]
+    best = best_entry["scored"]
+    if best_entry["exact"]:
+        competitors = [entry["scored"] for entry in ranked if not same_identity(best, entry["scored"])]
+        competitor = max(competitors, key=lambda item: item["score"], default=None)
+    else:
+        competitor = ranked[1]["scored"] if len(ranked) > 1 else None
+    close_second = bool(competitor and best["score"] - competitor["score"] < 0.04)
     confidence = (
-        "MEDIUM" if close_second else confidence_for(best["score"], best["reasons"])
+        "MEDIUM"
+        if close_second
+        else "HIGH"
+        if best_entry["exact"]
+        else confidence_for(best["score"], best["reasons"])
     )
     matched = best["score"] >= threshold and confidence == "HIGH" and not close_second
     return {
@@ -259,6 +418,7 @@ def match_track(
         "artists": best.get("artists") or [],
         "score": best["score"],
         "confidence": confidence,
+        "matchTier": "EXACT" if best_entry["exact"] else "WEIGHTED",
         "selectedCandidate": best,
         "candidates": scored,
         "reason": "" if matched else uncertainty_reason(best, close_second, threshold),

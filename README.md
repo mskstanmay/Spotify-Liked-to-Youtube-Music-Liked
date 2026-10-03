@@ -279,7 +279,7 @@ Failures are recorded as `failed` and can be retried with `npm run retry`. Use `
 
 ## Ambiguous Matches
 
-The matcher scores normalized title, artists, duration, album, result type, and version indicators such as live, remix, cover, acoustic, sped-up, slowed, and instrumental. Only high-confidence matches above `MATCH_CONFIDENCE_THRESHOLD` are liked automatically.
+The matcher first recognizes strict exact-evidence matches: normalized title, the same normalized artist set, a duration within three seconds, a trusted YouTube Music song or official music-video result, and no version conflict. Equivalent song/video representations do not create false ambiguity, and songs are preferred over official music videos. Other candidates retain the weighted title, artist, duration, album, result-type, and version scoring path. Only high-confidence matches above `MATCH_CONFIDENCE_THRESHOLD` are liked automatically.
 
 Uncertain tracks are written to `data/review.json` with the Spotify track, candidate list, scores, selected candidate, and reason.
 
