@@ -8,6 +8,7 @@ const { tryClaimVideoLike, recordVideoLiked, completeVideoLike, releaseVideoLike
 const { logOperation } = require('../utils/operationLogger');
 
 const CLAIMABLE_STATUSES = ['SCANNING', 'QUEUED', 'RUNNING'];
+const SPOTIFY_TRACK_BATCH_SIZE = 200;
 
 class LeaseLostError extends Error {
   constructor() {
@@ -31,6 +32,32 @@ function candidateRows(trackId, candidates) {
     score: candidate.score ?? 0,
     reasons: candidate.reasons || [],
   }));
+}
+
+function spotifyTrackRows(migrationId, tracks) {
+  const seen = new Set();
+  const rows = [];
+  tracks.forEach((track, position) => {
+    if (!track?.spotifyTrackId || seen.has(track.spotifyTrackId)) return;
+    seen.add(track.spotifyTrackId);
+    rows.push({
+      migrationId,
+      position: position + 1,
+      spotifyTrackId: track.spotifyTrackId,
+      spotifyTitle: track.title,
+      spotifyArtists: track.artists,
+      spotifyAlbum: track.album,
+      spotifyDurationMs: track.durationMs,
+      spotifyUrl: track.spotifyUrl,
+    });
+  });
+  return rows;
+}
+
+function spotifyFetchComplete(job, trackCount) {
+  return job.sourceTotalTracks !== null
+    && job.sourceTotalTracks !== undefined
+    && job.totalTracks === trackCount;
 }
 
 function isUsableAutoReviewMatch(result, minimumScore = 0.72) {
@@ -240,7 +267,10 @@ class MigrationWorker {
         where: this.fenceWhere(job, statuses),
         data: { lockedUntil },
       });
-      if (!fenced.count) throw new LeaseLostError();
+      if (!fenced.count) {
+        job.leaseLost = true;
+        throw new LeaseLostError();
+      }
       job.lockedUntil = lockedUntil;
       return callback(tx);
     });
@@ -248,6 +278,36 @@ class MigrationWorker {
 
   async updateMigration(job, statuses, data) {
     return this.fencedTransaction(job, statuses, (tx) => tx.migration.update({ where: { id: job.id }, data }));
+  }
+
+  async persistSpotifyTracks(job, tracks, sourceTotal, batchSize = SPOTIFY_TRACK_BATCH_SIZE) {
+    const rows = spotifyTrackRows(job.id, tracks);
+    for (let offset = 0; offset < rows.length; offset += batchSize) {
+      const batch = rows.slice(offset, offset + batchSize);
+      await this.fencedTransaction(job, ['SCANNING'], async (tx) => {
+        await tx.migrationTrack.createMany({ data: batch, skipDuplicates: true });
+        // A concurrent heartbeat failure is fail-closed even though the
+        // transaction's migration-row lock prevents a lease takeover here.
+        if (job.leaseLost) throw new LeaseLostError();
+      });
+    }
+
+    const trackCount = await this.fencedTransaction(job, ['SCANNING'], async (tx) => {
+      const persisted = await tx.migrationTrack.count({ where: { migrationId: job.id } });
+      if (persisted !== rows.length) {
+        const error = new Error(`Persisted ${persisted} of ${rows.length} Spotify tracks.`);
+        error.code = 'SPOTIFY_TRACK_PERSIST_INCOMPLETE';
+        throw error;
+      }
+      await tx.migration.update({
+        where: { id: job.id },
+        data: { totalTracks: persisted, sourceTotalTracks: sourceTotal },
+      });
+      return persisted;
+    });
+    job.totalTracks = trackCount;
+    job.sourceTotalTracks = sourceTotal;
+    return trackCount;
   }
 
   async acquireVideoLike(job, userId, videoId) {
@@ -288,7 +348,7 @@ class MigrationWorker {
   async scan(job) {
     const user = await this.prisma.user.findUnique({ where: { id: job.userId }, include: { spotifyConnection: true } });
     let trackCount = await this.prisma.migrationTrack.count({ where: { migrationId: job.id } });
-    if (!trackCount) {
+    if (!spotifyFetchComplete(job, trackCount)) {
       const fetchStartedAt = Date.now();
       const { tracks, sourceTotal } = await this.fetchLikedTracks(
         this.prisma,
@@ -313,25 +373,7 @@ class MigrationWorker {
         operation: 'fetch_liked_tracks', provider: 'spotify', durationMs: Date.now() - fetchStartedAt,
         result: 'success', trackCount: tracks.length,
       });
-      await this.fencedTransaction(job, ['SCANNING'], async (tx) => {
-        if (tracks.length) {
-          await tx.migrationTrack.createMany({
-            data: tracks.map((track, position) => ({
-              migrationId: job.id,
-              position: position + 1,
-              spotifyTrackId: track.spotifyTrackId,
-              spotifyTitle: track.title,
-              spotifyArtists: track.artists,
-              spotifyAlbum: track.album,
-              spotifyDurationMs: track.durationMs,
-              spotifyUrl: track.spotifyUrl,
-            })),
-            skipDuplicates: true,
-          });
-        }
-        trackCount = await tx.migrationTrack.count({ where: { migrationId: job.id } });
-        await tx.migration.update({ where: { id: job.id }, data: { totalTracks: trackCount, sourceTotalTracks: sourceTotal } });
-      });
+      trackCount = await this.persistSpotifyTracks(job, tracks, sourceTotal);
     }
 
     while (await this.owns(job, ['SCANNING'])) {
@@ -568,4 +610,15 @@ class MigrationWorker {
   }
 }
 
-module.exports = { MigrationWorker, LeaseLostError, refreshCounts, publicWorkerError, candidateRows, isUsableAutoReviewMatch, scanResultData };
+module.exports = {
+  MigrationWorker,
+  LeaseLostError,
+  SPOTIFY_TRACK_BATCH_SIZE,
+  spotifyTrackRows,
+  spotifyFetchComplete,
+  refreshCounts,
+  publicWorkerError,
+  candidateRows,
+  isUsableAutoReviewMatch,
+  scanResultData,
+};

@@ -67,6 +67,31 @@ integration('Prisma migrations apply and explicit phase/fence columns are usable
   assert.equal(track.needsReview, false);
 });
 
+integration('PostgreSQL persists a full-library Spotify snapshot in fenced batches', async () => {
+  const user = await createUser();
+  const migration = await createMigration(user.id, {
+    status: 'SCANNING', phase: 'SCANNING', workerId: 'worker-a', leaseVersion: 1,
+    lockedUntil: new Date(Date.now() + 60_000), sourceTotalTracks: null, totalTracks: 0,
+  });
+  const sourceTracks = Array.from({ length: 1901 }, (_, index) => ({
+    spotifyTrackId: `spotify-${index + 1}`,
+    title: `Song ${index + 1}`,
+    artists: ['Artist'],
+    album: 'Album',
+    durationMs: 180000 + index,
+    spotifyUrl: `https://open.spotify.com/track/${index + 1}`,
+  }));
+  const activeWorker = worker('worker-a', 60_000);
+  const count = await activeWorker.persistSpotifyTracks({ ...migration, leaseLost: false }, sourceTracks, 1901);
+  assert.equal(count, 1901);
+  assert.equal(await prisma.migrationTrack.count({ where: { migrationId: migration.id } }), 1901);
+  const updated = await prisma.migration.findUnique({ where: { id: migration.id } });
+  assert.equal(updated.totalTracks, 1901);
+  assert.equal(updated.sourceTotalTracks, 1901);
+  assert.equal(updated.status, 'SCANNING');
+  assert.equal(updated.phase, 'SCANNING');
+});
+
 integration('PostgreSQL derives added-review counters from track flags without migration columns', async () => {
   const user = await createUser();
   const migration = await createMigration(user.id, { status: 'COMPLETED' });
